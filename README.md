@@ -1,90 +1,153 @@
 # AGI Lab Skills Marketplace
 
-Claude Code plugins curated by [AGI Lab](https://agilab.jp).
+AGIラボの plugin 集兼、AIエージェントハッカソン参加者向けの starter repo です。
 
-This repository now serves two purposes:
+この repo では 2 つの使い方があります。
 
-1. Install ready-made plugins from AGI Lab
-2. Use the `hackathon-starter` plugin as a template for the AGIラボ AIエージェントハッカソン
+1. AGIラボの既存 plugin をインストールして試す
+2. `plugins/hackathon-starter/` を土台にして、自分の作品をそのまま提出できる形に育てる
 
-## Install Existing Plugins
+この README は、特に 2 の「ハッカソン参加者が迷わず提出まで進めること」を優先して書いています。
 
-```bash
-# In Claude Code:
-/plugin marketplace add kaishushito/agi-lab-skills-marketplace
-/plugin install terminal-vibes@agi-lab-skills
-```
+## ハッカソン参加者はここから
 
-## For Hackathon Participants
+やることはシンプルです。
 
-If you are joining the AGI Lab hackathon, this repo can be your starting point.
+1. この repo を fork する
+2. `plugins/hackathon-starter/` を自分の作品に合わせて書き換える
+3. README を「何ができる plugin か」がすぐ伝わる形に直す
+4. GitHub で公開して、デモ動画と一緒に提出する
 
-### Start Here
+難しい仕組みを増やす必要はありません。
+まずは `1つの仕事を終わらせる skill` を、他の人が試せる形で置ければ十分です。
 
-1. Fork this repository
-2. Use `plugins/hackathon-starter/` as your base
-3. Rename the plugin and skill to match your idea
-4. Replace the starter text with your own workflow
-5. Push your repo publicly on GitHub
-6. Submit your repo URL and demo video
+## 提出までの一本道
 
-### Minimum Files To Touch
+### 1. 何を作るかを 1 行で決める
 
-- `.claude-plugin/marketplace.json`
-- `plugins/hackathon-starter/.claude-plugin/plugin.json`
+最初に決めるのは「誰の、どんな面倒を減らす skill なのか」です。
+
+例:
+
+- 営業後の議事メモから、次回提案メールの下書きを自動で作る
+- Discord の未回答質問を集めて、優先度付きで整理する
+- 毎朝のタスクと予定を見て、その日の実行順を提案する
+
+### 2. starter の中身を自分の作品に置き換える
+
+最低限、以下を直せば提出の土台になります。
+
 - `plugins/hackathon-starter/skills/starter-guide/SKILL.md`
-- `README.md`
+  - 自分の skill の説明、トリガー、入出力、ルールに書き換える
+- `plugins/hackathon-starter/.claude-plugin/plugin.json`
+  - plugin 名と説明文を自分の作品に合わせる
+- `.claude-plugin/marketplace.json`
+  - marketplace の説明と plugin 一覧を自分の提出内容に合わせる
 
-### What Judges Will Try
+時間がなければ、フォルダ名まできれいに変えなくても構いません。
+まずは `install できる`、`説明が読める`、`動きが分かる` 状態を優先してください。
 
-Your submission should be installable with:
+### 3. README を提出用に整える
+
+README には、少なくとも次の 4 点があると迷いません。
+
+1. この plugin が何をしてくれるか
+2. どうやってインストールするか
+3. どういう入力で呼ぶと、何が返るか
+4. デモ動画やスクリーンショットへの導線
+
+審査する側は、README を読んですぐ試せるかをかなり見ます。
+
+### 4. 公開 GitHub repo とデモ動画を用意する
+
+提出時に最低限あるとよいものは次のとおりです。
+
+- 公開 GitHub repo
+- plugin 1 つ
+- 分かりやすい `SKILL.md` 1 つ
+- README
+- 3 分以内のデモ動画
+
+これで十分に提出できます。
+
+## まず触るファイル
+
+### `.claude-plugin/marketplace.json`
+
+repo 全体の marketplace 情報です。
+審査側が install するときの marketplace 名や、plugin 一覧がここに入ります。
+
+### `plugins/hackathon-starter/.claude-plugin/plugin.json`
+
+plugin 単位の名前と説明です。
+README を読む前に、この説明が一覧で見られることがあります。
+
+### `plugins/hackathon-starter/skills/starter-guide/SKILL.md`
+
+この repo の核です。
+最初は starter ですが、提出時にはここを自分の skill に置き換える前提です。
+
+### `README.md`
+
+審査側と他の参加者が最初に読む入口です。
+長くしすぎるより、「何ができるか」「どう試すか」がすぐ分かる方が強いです。
+
+## 審査する側が最初に見ること
+
+多くの場合、最初に確認されるのは次の流れです。
 
 ```bash
 /plugin marketplace add <your-github-user>/<your-repo>
 /plugin install <your-plugin-name>@<your-marketplace-name>
 ```
 
-If the repo is public and the plugin installs cleanly, judges can try it quickly.
+ここで install できて、README を読めば使い方が分かる状態だと、作品の良さが伝わりやすくなります。
 
-### Good Enough For Submission
+## 最低限これなら提出できる
 
-You do not need a giant framework.
+次の条件を満たしていれば、十分提出ラインです。
 
-- One public GitHub repo
-- One plugin
-- One clear skill
-- A short README
-- A demo video within 3 minutes
+- public な GitHub repo がある
+- plugin が 1 つ入っている
+- `SKILL.md` が自分の作品内容に置き換わっている
+- README にセットアップと使い方が書いてある
+- デモ動画がある
 
-That is enough to submit.
+大きなフレームワークや複雑な構成は必須ではありません。
+まずは 1 つの体験を、最後まで試せる形で完成させるのが最優先です。
 
-## Available Plugins
+## 既存 plugin を試したい人へ
+
+この repo は marketplace としても使えます。
+
+```bash
+# In Claude Code
+/plugin marketplace add kaishushito/agi-lab-skills-marketplace
+/plugin install terminal-vibes@agi-lab-skills
+```
+
+## 収録 plugin
 
 ### hackathon-starter
 
-Starter plugin for hackathon participants.
-
-Use this when you want a minimal example of:
-
-- plugin structure
-- marketplace entry
-- skill frontmatter
-- README expectations
+ハッカソン参加者向けの最小 starter です。
+「まず 1 つ skill を形にして提出する」ための土台として使えます。
 
 ### terminal-vibes
 
-Bring fun to your terminal. No API keys needed.
+ターミナルで少し息抜きしたいときの遊び plugin です。
+ASCII ドーナツ、cat art、dad joke、Matrix rain などを試せます。
 
-| Command | What it does |
-|---------|-------------|
-| `/vibes` | Random terminal entertainment |
-| `/vibes donut` | Spinning 3D ASCII donut |
-| `/vibes cat` | Random ASCII cat art |
-| `/vibes joke` | Programmer dad jokes raining down |
-| `/vibes matrix` | Matrix-style digital rain |
-| `/vibes full show` | All acts in sequence |
+| Command | 内容 |
+|---------|------|
+| `/vibes` | ランダムで何か 1 つ表示 |
+| `/vibes donut` | 3D ASCII ドーナツ |
+| `/vibes cat` | ランダム ASCII cat art |
+| `/vibes joke` | プログラマー向け dad joke |
+| `/vibes matrix` | Matrix 風の文字列演出 |
+| `/vibes full show` | 全演目を順番に実行 |
 
-**Requirements**: Python 3, Bash, modern terminal with ANSI support.
+必要環境: Python 3, Bash, ANSI 対応のターミナル
 
 ## Repository Structure
 

@@ -1,6 +1,6 @@
 {
   "name": "hackathon-starter",
-  "description": "Starter plugin for AGI Lab hackathon participants. Replace this with your own skill and publish it in a shareable format.",
+  "description": "AGIラボハッカソン参加者向けの starter plugin。自分の skill に書き換えて、そのまま公開・提出の土台にできます。",
   "version": "0.1.0",
   "author": {
     "name": "AGI Lab"

@@ -5,14 +5,14 @@
     "email": "contact@agilab.jp"
   },
   "metadata": {
-    "description": "AGI Lab plugins and hackathon starter templates for Claude Code.",
+    "description": "AGIラボの plugin 集と、ハッカソン参加者向け starter template。",
     "version": "1.1.0"
   },
   "plugins": [
     {
       "name": "hackathon-starter",
       "source": "./plugins/hackathon-starter",
-      "description": "Starter plugin for AGI Lab hackathon participants. Fork, rename, and turn this into your own shareable skill.",
+      "description": "AGIラボハッカソン参加者向けの starter plugin。fork して、自分の skill に置き換えて公開・提出できます。",
       "version": "0.1.0",
       "category": "template",
       "tags": ["starter", "template", "hackathon", "marketplace"]
