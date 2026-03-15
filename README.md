@@ -1,153 +1,87 @@
-# AGI Lab Skills Marketplace
+# delta-lint — Autonomous Structural Contradiction Agent
 
-AGIラボの plugin 集兼、AIエージェントハッカソン参加者向けの starter repo です。
+リポジトリURLを渡すだけで、コードの構造矛盾を検出し、修正PRの作成まで自律的に実行するClaude Code plugin。
 
-この repo では 2 つの使い方があります。
+## これは何？
 
-1. AGIラボの既存 plugin をインストールして試す
-2. `plugins/hackathon-starter/` を土台にして、自分の作品をそのまま提出できる形に育てる
+delta-lint は、ソースコード内の**構造矛盾**（あるモジュールの前提が別のモジュールの振る舞いと矛盾している箇所）を検出する自律エージェントです。
 
-この README は、特に 2 の「ハッカソン参加者が迷わず提出まで進めること」を優先して書いています。
+静的リンターでは検出できない、設計レベルの矛盾を6つのパターンで分類・検出します。
 
-## ハッカソン参加者はここから
+### 自律性のポイント
 
-やることはシンプルです。
+- **一度お願いしたら最後まで**: diff取得 → 矛盾検出 → 修正コード生成 → テスト実行 → Issue起票 → PR作成
+- **エラーから自分で立て直す**: 変更ファイルがなければ自動でdiff範囲を広げる、テスト失敗なら修正を調整してリトライ
+- **足りない情報を自分で調べる**: import先を自動追跡し、関連モジュールのコンテキストを収集
 
-1. この repo を fork する
-2. `plugins/hackathon-starter/` を自分の作品に合わせて書き換える
-3. README を「何ができる plugin か」がすぐ伝わる形に直す
-4. GitHub で公開して、デモ動画と一緒に提出する
+### 実績
 
-難しい仕組みを増やす必要はありません。
-まずは `1つの仕事を終わらせる skill` を、他の人が試せる形で置ければ十分です。
+promptfoo（GitHub 16K star）でdelta-lintが検出した構造矛盾のPRがマージされました。
 
-## 提出までの一本道
-
-### 1. 何を作るかを 1 行で決める
-
-最初に決めるのは「誰の、どんな面倒を減らす skill なのか」です。
-
-例:
-
-- 営業後の議事メモから、次回提案メールの下書きを自動で作る
-- Discord の未回答質問を集めて、優先度付きで整理する
-- 毎朝のタスクと予定を見て、その日の実行順を提案する
-
-### 2. starter の中身を自分の作品に置き換える
-
-最低限、以下を直せば提出の土台になります。
-
-- `plugins/hackathon-starter/skills/starter-guide/SKILL.md`
-  - 自分の skill の説明、トリガー、入出力、ルールに書き換える
-- `plugins/hackathon-starter/.claude-plugin/plugin.json`
-  - plugin 名と説明文を自分の作品に合わせる
-- `.claude-plugin/marketplace.json`
-  - marketplace の説明と plugin 一覧を自分の提出内容に合わせる
-
-時間がなければ、フォルダ名まできれいに変えなくても構いません。
-まずは `install できる`、`説明が読める`、`動きが分かる` 状態を優先してください。
-
-### 3. README を提出用に整える
-
-README には、少なくとも次の 4 点があると迷いません。
-
-1. この plugin が何をしてくれるか
-2. どうやってインストールするか
-3. どういう入力で呼ぶと、何が返るか
-4. デモ動画やスクリーンショットへの導線
-
-審査する側は、README を読んですぐ試せるかをかなり見ます。
-
-### 4. 公開 GitHub repo とデモ動画を用意する
-
-提出時に最低限あるとよいものは次のとおりです。
-
-- 公開 GitHub repo
-- plugin 1 つ
-- 分かりやすい `SKILL.md` 1 つ
-- README
-- 3 分以内のデモ動画
-
-これで十分に提出できます。
-
-## まず触るファイル
-
-### `.claude-plugin/marketplace.json`
-
-repo 全体の marketplace 情報です。
-審査側が install するときの marketplace 名や、plugin 一覧がここに入ります。
-
-### `plugins/hackathon-starter/.claude-plugin/plugin.json`
-
-plugin 単位の名前と説明です。
-README を読む前に、この説明が一覧で見られることがあります。
-
-### `plugins/hackathon-starter/skills/starter-guide/SKILL.md`
-
-この repo の核です。
-最初は starter ですが、提出時にはここを自分の skill に置き換える前提です。
-
-### `README.md`
-
-審査側と他の参加者が最初に読む入口です。
-長くしすぎるより、「何ができるか」「どう試すか」がすぐ分かる方が強いです。
-
-## 審査する側が最初に見ること
-
-多くの場合、最初に確認されるのは次の流れです。
+## インストール
 
 ```bash
-/plugin marketplace add <your-github-user>/<your-repo>
-/plugin install <your-plugin-name>@<your-marketplace-name>
+# Claude Code で実行
+/plugin marketplace add karesansui-u/agi-lab-skills-marketplace
+/plugin install delta-lint@delta-lint-marketplace
 ```
 
-ここで install できて、README を読めば使い方が分かる状態だと、作品の良さが伝わりやすくなります。
+### 前提条件
 
-## 最低限これなら提出できる
+- Python 3.11+
+- `pip install anthropic`
+- `ANTHROPIC_API_KEY` 環境変数をセット
+- `gh` CLI で GitHub 認証済み
 
-次の条件を満たしていれば、十分提出ラインです。
+## 使い方
 
-- public な GitHub repo がある
-- plugin が 1 つ入っている
-- `SKILL.md` が自分の作品内容に置き換わっている
-- README にセットアップと使い方が書いてある
-- デモ動画がある
+### 基本（フル自律実行）
 
-大きなフレームワークや複雑な構成は必須ではありません。
-まずは 1 つの体験を、最後まで試せる形で完成させるのが最優先です。
-
-## 既存 plugin を試したい人へ
-
-この repo は marketplace としても使えます。
-
-```bash
-# In Claude Code
-/plugin marketplace add kaishushito/agi-lab-skills-marketplace
-/plugin install terminal-vibes@agi-lab-skills
+```
+/delta-lint /path/to/repo
 ```
 
-## 収録 plugin
+渡すだけで、以下を自動実行します：
+1. git diffから変更ファイルを特定
+2. import追跡で関連モジュールを収集
+3. LLMで構造矛盾を検出（6パターン）
+4. 検出結果をトリアージ（真陽性/偽陽性の評価）
+5. 修正コードを生成・テスト実行
+6. GitHub Issueを起票
+7. 修正PRを作成
 
-### hackathon-starter
+### スキャンのみ
 
-ハッカソン参加者向けの最小 starter です。
-「まず 1 つ skill を形にして提出する」ための土台として使えます。
+```
+/delta-lint scan
+```
 
-### terminal-vibes
+検出のみ実行し、修正・PR作成は行いません。
 
-ターミナルで少し息抜きしたいときの遊び plugin です。
-ASCII ドーナツ、cat art、dad joke、Matrix rain などを試せます。
+### 特定ファイルを指定
 
-| Command | 内容 |
-|---------|------|
-| `/vibes` | ランダムで何か 1 つ表示 |
-| `/vibes donut` | 3D ASCII ドーナツ |
-| `/vibes cat` | ランダム ASCII cat art |
-| `/vibes joke` | プログラマー向け dad joke |
-| `/vibes matrix` | Matrix 風の文字列演出 |
-| `/vibes full show` | 全演目を順番に実行 |
+```
+/delta-lint scan --files src/auth.ts src/session.ts
+```
 
-必要環境: Python 3, Bash, ANSI 対応のターミナル
+### Suppress（意図的な矛盾を除外）
+
+```
+/delta-lint suppress 3
+/delta-lint suppress --list
+/delta-lint suppress --check
+```
+
+## 6つの構造矛盾パターン
+
+| # | パターン名 | シグナル |
+|---|-----------|---------|
+| 1 | **Asymmetric Defaults** | 入力パスと出力パスで同じ値の扱いが異なる |
+| 2 | **Semantic Mismatch** | 同じ名前が異なるモジュールで異なる意味を持つ |
+| 3 | **External Spec Divergence** | 実装が準拠するはずの仕様と矛盾 |
+| 4 | **Guard Non-Propagation** | バリデーションが一方のパスにあり、並行パスにない |
+| 5 | **Paired-Setting Override** | 独立に見える設定が実は干渉し合う |
+| 6 | **Lifecycle Ordering** | 実行順序の前提が特定のコードパスで崩れる |
 
 ## Repository Structure
 
@@ -156,17 +90,20 @@ ASCII ドーナツ、cat art、dad joke、Matrix rain などを試せます。
 └── marketplace.json
 
 plugins/
-├── hackathon-starter/
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   └── skills/
-│       └── starter-guide/
-│           └── SKILL.md
-└── terminal-vibes/
+└── delta-lint/
     ├── .claude-plugin/
     │   └── plugin.json
     ├── scripts/
+    │   ├── cli.py
+    │   ├── detector.py
+    │   ├── retrieval.py
+    │   ├── output.py
+    │   ├── suppress.py
+    │   └── prompts/
+    │       └── detect.md
     └── skills/
+        └── delta-lint/
+            └── SKILL.md
 ```
 
 ## License

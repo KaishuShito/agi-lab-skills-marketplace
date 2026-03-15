@@ -1,0 +1,10 @@
+{
+  "name": "delta-lint",
+  "description": "構造矛盾を自律検出し、Issue起票・修正PR作成まで自走するコード品質エージェント。リポジトリURLかdiffを渡すだけで、追加指示なしで最後まで進めます。",
+  "version": "0.1.0",
+  "author": {
+    "name": "sunagawa"
+  },
+  "license": "MIT",
+  "keywords": ["structural-contradiction", "code-quality", "autonomous-agent", "linter"]
+}

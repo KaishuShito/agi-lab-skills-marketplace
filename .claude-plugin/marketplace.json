@@ -1,29 +1,20 @@
 {
-  "name": "agi-lab-skills",
+  "name": "delta-lint-marketplace",
   "owner": {
-    "name": "AGI Lab",
-    "email": "kai@tempi.co.jp"
+    "name": "sunagawa"
   },
   "metadata": {
-    "description": "AGIラボの plugin 集と、ハッカソン参加者向け starter template。",
-    "version": "1.1.0"
+    "description": "delta-lint: コード変更の構造矛盾を自律検出し、Issue起票・PR作成まで自走するエージェント",
+    "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "hackathon-starter",
-      "source": "./plugins/hackathon-starter",
-      "description": "AGIラボハッカソン参加者向けの starter plugin。fork して、自分の skill に置き換えて公開・提出できます。",
+      "name": "delta-lint",
+      "source": "./plugins/delta-lint",
+      "description": "リポジトリの構造矛盾を自律的に検出・修正・PR作成まで行うコード品質エージェント",
       "version": "0.1.0",
-      "category": "template",
-      "tags": ["starter", "template", "hackathon", "marketplace"]
-    },
-    {
-      "name": "terminal-vibes",
-      "source": "./plugins/terminal-vibes",
-      "description": "Spinning ASCII donuts, cat art, dad jokes, and Matrix rain. Pure terminal fun, no API keys needed.",
-      "version": "1.1.0",
-      "category": "fun",
-      "tags": ["entertainment", "ascii-art", "terminal", "break-time"]
+      "category": "code-quality",
+      "tags": ["linter", "agent", "code-review", "structural-contradiction"]
     }
   ]
 }
