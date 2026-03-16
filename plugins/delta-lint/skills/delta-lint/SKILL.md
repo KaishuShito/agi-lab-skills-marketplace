@@ -54,39 +54,38 @@ ls {repo_path}/.delta-lint/stress-test/results.json 2>/dev/null
 - If exists: Tell user "このリポは初期化済みです。再実行しますか？" and wait for confirmation.
 - If not: **Immediately proceed to Step 2. Do NOT ask "実行しますか？" — the user already said "delta init", that IS the instruction.**
 
-### Step 1.5: 構造分析の即時表示 — EXECUTE IMMEDIATELY
+### Step 2: Run stress-test (background) — EXECUTE IMMEDIATELY
 
-stress-test を起動する前に、まず構造分析だけ先に実行して結果を即座に見せる。
+**You MUST execute this Bash command right now:**
 
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --structure-only --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize 2>&1
 ```
 
-**`--structure-only` が未実装の場合**: structure.json が生成されるまでの出力（Step 0 部分）をパースする。stress_test.py の verbose 出力に `Found N source files`, `Identified N modules, N hotspots` が含まれる。
+Use `run_in_background: true` and `timeout: 600000`.
 
-構造分析完了後、**即座に**以下を表示する（structure.json を読んでデータを埋める）：
+### Step 2.1: 構造分析の結果を即表示 — CRITICAL UX STEP
+
+**stress-test をバックグラウンドで起動した直後、structure.json が生成されるのを待って読む。**
+structure.json は Step 0（構造分析）完了時に生成され、通常10〜30秒で完了する。
 
 ```bash
-cd {repo_path} && python3 -c "
+for i in $(seq 1 30); do [ -f "{repo_path}/.delta-lint/stress-test/structure.json" ] && break; sleep 2; done && cd {repo_path} && python3 -c "
 import json
 d=json.load(open('.delta-lint/stress-test/structure.json'))
 modules=d.get('modules',[])
 hotspots=d.get('hotspots',[])
 constraints=d.get('implicit_constraints',[])
-print(f'モジュール: {len(modules)} 個')
-print(f'ホットスポット: {len(hotspots)} 個')
-print()
-print('🔥 依存が集中しているファイル:')
-for i,h in enumerate(hotspots[:5],1):
-    print(f'  {i}. {h[\"file\"]} — {h.get(\"reason\",\"\")}')
-print()
-print('⚠️ 検出された暗黙の制約:')
-for i,c in enumerate(constraints[:5],1):
-    print(f'  {i}. {c}')
+print(f'modules: {len(modules)}')
+print(f'hotspots: {len(hotspots)}')
+for h in hotspots[:5]:
+    print(f'  {h.get(\"path\", h.get(\"file\",\"\"))} — {h.get(\"reason\",\"\")}')
+for c in constraints[:5]:
+    print(f'  constraint: {c}')
 "
 ```
 
-ユーザーに表示するフォーマット：
+**このコマンドの結果を使って、以下のフォーマットでユーザーに即座に表示する。これが delta init の第一印象になる。絶対にスキップしないこと：**
 
 ```
 🔍 delta-lint 初期化中...
@@ -105,36 +104,11 @@ for i,c in enumerate(constraints[:5],1):
   - {constraint2}
   - {constraint3}
 
-これらのホットスポットを中心にストレステストを実行します...
+📡 ストレステスト実行中（10並列）
+  矛盾が見つかり次第、随時報告します。
+  この間、通常の作業を続けて大丈夫です。
+  なにか確認したいことはありますか？
 ```
-
-**この表示は数秒で出る。ユーザーに即座にインパクトを与える。**
-
-### Step 2: Run stress-test (background) — EXECUTE IMMEDIATELY
-
-Step 1.5 の表示直後に、stress-test をバックグラウンドで起動する：
-
-```bash
-cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize 2>&1
-```
-
-Use `run_in_background: true` and `timeout: 600000`.
-
-The script is fully autonomous — it auto-determines modification count, saves checkpoints every 10 scans, focuses on discovered hotspots, and auto-converges.
-
-起動後、追加で以下を表示：
-
-```
-📡 ストレステスト開始（{n} 件、10並列）
-  - 10件ごとにチェックポイント保存
-  - 推定所要時間: 約{estimated_minutes}分
-  - 矛盾が見つかり次第、随時報告します
-
-この間、通常の作業を続けて大丈夫です。
-なにか確認したいことはありますか？
-```
-
-Estimate time: n_modifications / 10 * 2 minutes (rough).
 
 ### Step 2.5: Add .gitignore for .delta-lint/ — EXECUTE IMMEDIATELY
 
