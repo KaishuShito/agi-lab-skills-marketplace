@@ -54,9 +54,65 @@ ls {repo_path}/.delta-lint/stress-test/results.json 2>/dev/null
 - If exists: Tell user "このリポは初期化済みです。再実行しますか？" and wait for confirmation.
 - If not: **Immediately proceed to Step 2. Do NOT ask "実行しますか？" — the user already said "delta init", that IS the instruction.**
 
+### Step 1.5: 構造分析の即時表示 — EXECUTE IMMEDIATELY
+
+stress-test を起動する前に、まず構造分析だけ先に実行して結果を即座に見せる。
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --structure-only --verbose 2>&1
+```
+
+**`--structure-only` が未実装の場合**: structure.json が生成されるまでの出力（Step 0 部分）をパースする。stress_test.py の verbose 出力に `Found N source files`, `Identified N modules, N hotspots` が含まれる。
+
+構造分析完了後、**即座に**以下を表示する（structure.json を読んでデータを埋める）：
+
+```bash
+cd {repo_path} && python3 -c "
+import json
+d=json.load(open('.delta-lint/stress-test/structure.json'))
+modules=d.get('modules',[])
+hotspots=d.get('hotspots',[])
+constraints=d.get('implicit_constraints',[])
+print(f'モジュール: {len(modules)} 個')
+print(f'ホットスポット: {len(hotspots)} 個')
+print()
+print('🔥 依存が集中しているファイル:')
+for i,h in enumerate(hotspots[:5],1):
+    print(f'  {i}. {h[\"file\"]} — {h.get(\"reason\",\"\")}')
+print()
+print('⚠️ 検出された暗黙の制約:')
+for i,c in enumerate(constraints[:5],1):
+    print(f'  {i}. {c}')
+"
+```
+
+ユーザーに表示するフォーマット：
+
+```
+🔍 delta-lint 初期化中...
+
+📊 リポジトリ概要:
+  {n_source_files} ソースファイル ({primary_language})
+  {n_modules} モジュール, {n_hotspots} ホットスポット
+
+🔥 依存が集中しているファイル:
+  1. {file1} — {reason1}
+  2. {file2} — {reason2}
+  3. {file3} — {reason3}
+
+⚠️ 検出された暗黙の制約:
+  - {constraint1}
+  - {constraint2}
+  - {constraint3}
+
+これらのホットスポットを中心にストレステストを実行します...
+```
+
+**この表示は数秒で出る。ユーザーに即座にインパクトを与える。**
+
 ### Step 2: Run stress-test (background) — EXECUTE IMMEDIATELY
 
-**You MUST execute this Bash command right now. Do not explain what it does, do not ask for confirmation, just run it:**
+Step 1.5 の表示直後に、stress-test をバックグラウンドで起動する：
 
 ```bash
 cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize 2>&1
@@ -66,19 +122,13 @@ Use `run_in_background: true` and `timeout: 600000`.
 
 The script is fully autonomous — it auto-determines modification count, saves checkpoints every 10 scans, focuses on discovered hotspots, and auto-converges.
 
-After launching, tell the user exactly this (adapt the numbers from the verbose output):
+起動後、追加で以下を表示：
 
 ```
-🔍 delta-lint 初期化を開始しました
-
-📊 リポジトリ: {repo_name}（{n_source_files} ソースファイル）
-⚙️ 仮想改修: {n} 件（自動決定）、10並列スキャン
-💰 コスト: $0（サブスクCLI）
-
-バックグラウンドでスキャン中です。
-- 10件ごとにマップが更新されます
-- 完了したら結果を報告します
-- 推定所要時間: 約{estimated_minutes}分
+📡 ストレステスト開始（{n} 件、10並列）
+  - 10件ごとにチェックポイント保存
+  - 推定所要時間: 約{estimated_minutes}分
+  - 矛盾が見つかり次第、随時報告します
 
 この間、通常の作業を続けて大丈夫です。
 なにか確認したいことはありますか？
@@ -118,6 +168,47 @@ Estimate time: n_modifications / 10 * 2 minutes (rough).
   - 高リスクファイル（risk_score > 0）が2つ以上関わる場合、事前に `delta scan --files <対象ファイル>` を提案すること
 - コード改修後は delta-lint scan の実行を提案すること
 ```
+
+### Step 3.5: チェックポイントごとの中間報告（任意）
+
+stress-test はバックグラウンドで実行中だが、ユーザーとの会話の合間に進捗を確認し、新しい発見があれば報告する。
+
+チェックポイント（10件ごと）で results.json が更新されるので、以下のコマンドで最新の findings を取得できる：
+
+```bash
+cd {repo_path} && python3 -c "
+import json, os
+f='.delta-lint/stress-test/results.json'
+if os.path.exists(f):
+    d=json.load(open(f))
+    results=d.get('results',[])
+    findings=[r for r in results if r.get('findings')]
+    print(f'進捗: {len(results)} スキャン完了, {len(findings)} 件で矛盾検出')
+    # Show latest interesting finding
+    for r in reversed(results):
+        if r.get('findings'):
+            f0=r['findings'][0]
+            print(f'  最新: {f0.get(\"pattern\",\"\")} — {f0.get(\"file_a\",\"\")} vs {f0.get(\"file_b\",\"\")}')
+            print(f'  概要: {f0.get(\"contradiction\",\"\")[:100]}...')
+            break
+else:
+    print('まだスキャン結果なし')
+"
+```
+
+見つかった矛盾が興味深い場合、ユーザーに報告：
+
+```
+📡 チェックポイント: {n}件スキャン完了、{hits}件で矛盾検出
+
+🐛 発見した矛盾の例:
+  [{pattern_name}] {file_a} vs {file_b}
+  {contradiction の要約}
+
+引き続きスキャン中...
+```
+
+**ユーザーが別の作業で忙しい場合は中間報告を控える。会話の自然な切れ目で報告する。**
 
 ### Step 4: When stress-test completes
 

@@ -658,8 +658,27 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--parallel", type=int, default=1, help="Concurrent scans (default: 1, recommended max: 10)")
     parser.add_argument("--visualize", action="store_true", help="Generate HTML heatmap after scan")
+    parser.add_argument("--structure-only", action="store_true", help="Run only structure analysis (Step 0), then exit")
 
     args = parser.parse_args()
+
+    if args.structure_only:
+        structure = analyze_structure(args.repo, verbose=args.verbose)
+        output_dir = Path(args.output_dir or Path(args.repo) / ".delta-lint" / "stress-test")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / "structure.json", "w") as f:
+            json.dump(structure, f, indent=2, ensure_ascii=False)
+        # Print summary for immediate display
+        modules = structure.get("modules", [])
+        hotspots = structure.get("hotspots", [])
+        constraints = structure.get("implicit_constraints", [])
+        print(f"modules: {len(modules)}")
+        print(f"hotspots: {len(hotspots)}")
+        for h in hotspots[:5]:
+            print(f"  hotspot: {h.get('path', h.get('file', ''))} — {h.get('reason', '')}")
+        for c in constraints[:5]:
+            print(f"  constraint: {c}")
+        sys.exit(0)
 
     results = run_stress_test(
         repo_path=args.repo,
