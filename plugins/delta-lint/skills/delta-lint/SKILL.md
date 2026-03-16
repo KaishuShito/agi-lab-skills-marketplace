@@ -2,11 +2,15 @@
 name: delta-lint
 description: >
   Detect structural contradictions in codebases using LLM analysis.
-  Use when user says "delta-lint", "delta scan", "delta init",
+  Use when user says "delta-lint", "delta scan", "delta init", "delta plan",
   "structural contradiction", "構造矛盾", "デグレチェック",
   "suppress finding", "suppress check", "地雷マップ", "landmine map",
+  "影響範囲", "事前チェック", "impact analysis",
   or asks to check code consistency across files.
-  Supports init, scan, suppress add/list/check workflows.
+  Also triggers when user proposes any code change (new feature, bug fix,
+  refactoring, performance improvement, etc.) and delta-lint has been
+  initialized (`.delta-lint/` exists).
+  Supports init, plan, scan, suppress add/list/check workflows.
 ---
 
 # delta-lint: Structural Contradiction Detector
@@ -93,7 +97,10 @@ Estimate time: n_modifications / 10 * 2 minutes (rough).
 - ファイルを編集する前に、そのファイルの risk_score を確認すること
   - 確認方法: `python -c "import json; d=json.load(open('.delta-lint/stress-test/results.json')); risks={r['modification']['file']: len(r['findings']) for r in d['results'] if r['findings']}; print(risks.get('TARGET_FILE', 'not in map'))"` (TARGET_FILE を実際のパスに置換)
 - risk_score > 0.35 のファイルを編集する場合、ユーザーに警告すること
-- 大きな機能追加・リファクタリング後は delta-lint scan の実行を提案すること
+- コード改修（新機能・バグ修正・リファクタリング・性能改善等）の計画時:
+  - 影響しそうなファイル群の risk_score を一覧表示すること
+  - 高リスクファイル（risk_score > 0）が2つ以上関わる場合、事前に `delta scan --files <対象ファイル>` を提案すること
+- コード改修後は delta-lint scan の実行を提案すること
 ```
 
 ### Step 4: When stress-test completes
@@ -146,6 +153,188 @@ for f,c in hits.most_common(3):
    - Timeout → suggest `--n 30`
    - Not a git repo → tell user
 3. **Auto-retry once** before reporting to user
+
+---
+
+## Workflow 0.5: Plan (`delta plan`)
+
+**コード改修の前に、影響範囲と潜在リスクを事前分析する。**
+
+**Trigger**: User proposes any code change — new feature, bug fix, refactoring, performance improvement, dependency update, etc. Also triggered by "delta plan", "影響範囲チェック", "事前チェック", "impact analysis". **Auto-trigger**: ユーザーがコード改修を指示した時（「〇〇を追加したい」「〇〇を直したい」「〇〇をリファクタしたい」「〇〇の性能改善したい」等）、`.delta-lint/` が存在すれば自動的にこのワークフローを実行する。
+
+### Step 1: 影響ファイルの特定
+
+ユーザーの要望を分析し、影響しそうなファイルをリストアップする。以下の情報を使う：
+
+1. **構造分析**: `.delta-lint/stress-test/structure.json` からモジュール間依存関係を読む
+2. **コード検索**: 関連するキーワード・関数・型をコードベースで検索
+3. **地雷マップ**: `.delta-lint/stress-test/results.json` から各ファイルの risk_score を取得
+
+```bash
+python3 -c "
+import json
+d=json.load(open('{repo_path}/.delta-lint/stress-test/results.json'))
+from collections import Counter
+hits=Counter()
+for r in d['results']:
+    if r.get('findings'):
+        f=r['modification'].get('file','')
+        if f: hits[f]+=len(r['findings'])
+for f in {affected_files_list}:
+    score=hits.get(f, 0)
+    mark='🔴' if score>=3 else '🟡' if score>=1 else '⚪'
+    print(f'  {mark} {f}: {score} findings')
+"
+```
+
+### Step 2: 暗黙の契約の洗い出し
+
+影響ファイル群について、以下を分析してユーザーに提示する：
+
+1. **ファイル間の暗黙の前提**: 共通の型・定数・規約に依存している箇所
+2. **既存パターンとの整合性**: 同種の既存実装（例: 既存ミドルウェア）と揃えるべき点
+3. **6つの矛盾パターンのリスク**: 各パターンが発生しうるポイントを具体的に指摘
+
+出力フォーマット:
+
+```
+📋 影響範囲分析: {feature_name}
+
+📁 影響ファイル:
+  🔴 mux.go (risk: 9) — ルーティング登録の変更が必要
+  🟡 middleware/throttle.go (risk: 2) — 類似機能との整合性
+  ⚪ middleware/realip.go (risk: 0) — IP取得ロジックへの依存
+
+⚠️ 潜在リスク:
+  1. [Guard Non-Propagation] realip.go のIP取得ロジックと新機能のIP取得が不一致になる可能性
+  2. [Lifecycle Ordering] ミドルウェアの実行順序に依存する暗黙の前提がある
+  3. [Asymmetric Defaults] throttle.go と HTTPレスポンス形式が異なる可能性
+
+💡 推奨事項:
+  - 実装前に realip.go のIP取得関数を共通化することを検討
+  - throttle.go のレスポンス形式に揃えること
+  - 実装後に `delta scan --files <affected>` で矛盾チェック推奨
+```
+
+### Step 3: 事前スキャン（自動実行）
+
+高リスクファイル（risk > 0）が2つ以上含まれる場合、**確認せずに自動で** `delta scan --files` を実行する：
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --files {affected_files} --verbose --severity medium 2>&1
+```
+
+### Step 4: 設計レビュー（サブエージェント）
+
+Step 2-3 の分析結果をもとに、**サブエージェントを起動して設計レビュー**を行う。確認を求めず自動実行する。
+
+サブエージェントには以下のプロンプトを渡す：
+
+```
+あなたは設計レビュアーです。以下の改修計画について、3つの観点でレビューしてください。
+
+## 改修内容
+{ユーザーの要望の要約}
+
+## 影響範囲分析の結果
+{Step 2 の出力}
+
+## delta scan の findings
+{Step 3 の出力（あれば）}
+
+## レビュー観点
+
+### 1. Findings 検証
+各 finding について：
+- 該当コードを実際に読み、矛盾が実在するか検証する
+- 既存テストがこのケースをカバーしているか確認する
+- confidence を判定: ✅ confirmed / ⚠️ likely / ❌ false positive
+- false positive の場合はその理由を明記
+
+### 2. 既存コードとの整合性チェック
+**大前提: 既存コードのスタイル・パターンは意図的な設計判断として尊重する。**
+新しいコードが既存のコードベースに「馴染む」設計になっているかを検証する：
+
+- **スタイルの踏襲**: 既存コードのエラーハンドリング、命名規約、ファイル構成、コメントスタイルを分析し、新コードがそれに揃っているか
+- **暗黙の設計ルールの発見**: 既存の類似モジュール（例: 他のミドルウェア）を3つ以上読み、共通パターンを抽出する。そのパターンに従っているか
+- **意図的な重複の尊重**: 既存コードに似たロジックの重複がある場合、それは意図的な選択（疎結合のため等）である可能性がある。安易に共通化を提案しない
+- **新たな負債の持ち込み防止**: 既存にないレイヤー（新しい抽象化、共通ユーティリティ等）を不必要に追加していないか。既存の仕組みで実現できるならそれを使う
+
+### 3. テスト要件
+この改修で追加すべきテストケースを具体的にリストアップする：
+- 正常系: 基本的な動作確認
+- 異常系: エラーケース、エッジケース
+- 結合テスト: 他のミドルウェア/モジュールとの組み合わせ
+- 回帰テスト: findings で指摘された矛盾パターンが発生しないことの確認
+
+## 出力フォーマット
+
+📋 設計レビュー結果
+
+🔍 Findings 検証:
+  1. Finding X: ✅/⚠️/❌ — {理由}
+  2. ...
+
+🏗️ 既存コードとの整合性:
+  - 踏襲すべきパターン: {既存の類似モジュールから抽出した共通パターン}
+  - 注意点: {既存スタイルと乖離しそうな箇所があれば具体的に}
+
+🧪 必須テストケース:
+  1. {テスト名} — {何を確認するか}
+  2. ...
+
+⚠️ 実装時の注意事項:
+  1. {findings + 負債チェックから導出された具体的な注意点}
+  2. ...
+```
+
+サブエージェントは `subagent_type: "general-purpose"` で起動し、結果を待つ。
+
+### Step 5: 実装提案をユーザーに提示する
+
+Step 1-4 の全分析結果を統合し、**実装提案**としてユーザーに提示する。以下のフォーマットで報告する：
+
+```
+📋 実装提案: {feature_name}
+
+🔍 現状:
+  - {既存コードの関連部分の要約}
+  - {地雷マップ・scan から判明したリスク}
+
+⚡ 既存動作から変わること:
+  - {この改修によって変わる既存の振る舞いを具体的に列挙}
+  - 例: 「OPTIONS リクエストが 405 → 200 + CORSヘッダーに変わる」
+  - 例: 「エラーレスポンスのフォーマットが JSON に統一される」
+  - 変更なし（純粋な追加）の場合は「既存動作への影響なし」と明記
+
+📐 提案する設計:
+  - {具体的な実装方針}
+  - {既存パターンに揃えるポイント}
+  - {findings を踏まえた回避策}
+
+❓ 確認したいこと:
+  - {ユーザーに判断を仰ぎたい設計上の選択肢}
+  - 例: 「既存の route_headers.go の CORS パターンと併用可能にするか、置き換えるか？」
+  - 例: 「デフォルトで全オリジン許可にするか、明示的な設定を必須にするか？」
+  - 判断不要な場合は省略
+
+🚫 スコープ外（今回やらないこと）:
+  - {意図的に対象外とするもの＋理由}
+
+🧪 追加するテスト:
+  - {テストケースのリスト}
+
+確認事項に問題なければ実装に進みます。
+```
+
+**ユーザーの承認を待ってから実装に着手する。** 調査・分析・レビューは自律的に行うが、実装の最終判断はユーザーに委ねる。
+
+### Step 6: 実装 → 事後検証
+
+ユーザーの承認後：
+- 提案に沿ってコードを実装する
+- レビューで挙がったテストケースも一緒に実装する
+- 実装完了後に `delta scan` で新たな矛盾がないことを確認する
 
 ---
 
