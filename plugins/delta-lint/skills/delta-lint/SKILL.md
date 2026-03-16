@@ -62,9 +62,25 @@ Use `run_in_background: true` and `timeout: 600000`.
 
 The script is fully autonomous — it auto-determines modification count, saves checkpoints every 10 scans, focuses on discovered hotspots, and auto-converges.
 
-After launching, tell the user:
-- "stress-test をバックグラウンドで開始しました（$0、サブスクCLI）"
-- "完了したら通知します。この間、通常の作業を続けて大丈夫です"
+After launching, tell the user exactly this (adapt the numbers from the verbose output):
+
+```
+🔍 delta-lint 初期化を開始しました
+
+📊 リポジトリ: {repo_name}（{n_source_files} ソースファイル）
+⚙️ 仮想改修: {n} 件（自動決定）、10並列スキャン
+💰 コスト: $0（サブスクCLI）
+
+バックグラウンドでスキャン中です。
+- 10件ごとにマップが更新されます
+- 完了したら結果を報告します
+- 推定所要時間: 約{estimated_minutes}分
+
+この間、通常の作業を続けて大丈夫です。
+なにか確認したいことはありますか？
+```
+
+Estimate time: n_modifications / 10 * 2 minutes (rough).
 
 ### Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY
 
@@ -83,10 +99,44 @@ After launching, tell the user:
 ### Step 4: When stress-test completes
 
 When the background task notification arrives:
-1. Read the output to get the summary
+1. Read the output file to get the summary
 2. Open the heatmap: `open {repo_path}/.delta-lint/stress-test/landmine_map.html`
-3. Report: total scans, hit rate, top 3 high-risk files
-4. "地雷マップが完成しました。以降、高リスクファイルの編集時に自動で警告します"
+3. Report to user exactly this format (fill in actual data):
+
+```
+✅ delta-lint 初期化完了
+
+📊 結果サマリー:
+- スキャン: {hit_mods}/{total_mods} 件の仮想改修で矛盾を検出（ヒット率 {hit_rate}%）
+- 発見: {total_findings} 件の構造矛盾
+- 対象: {n_files_at_risk} ファイルにリスクあり
+
+🔴 高リスクファイル TOP 3:
+1. {file1} — risk {score1}（{hits1}回被弾）
+2. {file2} — risk {score2}（{hits2}回被弾）
+3. {file3} — risk {score3}（{hits3}回被弾）
+
+🗺️ ヒートマップをブラウザで開きました。
+以降、高リスクファイルの編集時に自動で警告します。
+```
+
+To get top 3 files, run:
+```bash
+cd {repo_path} && python -c "
+import json
+d=json.load(open('.delta-lint/stress-test/results.json'))
+from collections import Counter
+hits=Counter()
+for r in d['results']:
+    if r.get('findings'):
+        f=r['modification'].get('file','')
+        if f: hits[f]+=1
+        for af in r['modification'].get('affected_files',[]):
+            hits[af]+=1
+for f,c in hits.most_common(3):
+    print(f'  {f}: {c} hits')
+"
+```
 
 ### If stress-test fails
 
