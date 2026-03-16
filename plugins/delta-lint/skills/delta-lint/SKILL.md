@@ -86,6 +86,22 @@ After launching, tell the user exactly this (adapt the numbers from the verbose 
 
 Estimate time: n_modifications / 10 * 2 minutes (rough).
 
+### Step 2.5: Add .gitignore for .delta-lint/ — EXECUTE IMMEDIATELY
+
+**Do not wait for Step 2 to complete.** `.delta-lint/` をデフォルトで git 管理対象外にする。
+
+プロジェクトの `.gitignore` に以下を追加する（既に存在する場合はスキップ）：
+
+```gitignore
+# delta-lint (uncomment below to share landmine map with team)
+.delta-lint/
+# To share with team, replace above with:
+# .delta-lint/stress-test/structure.json
+# .delta-lint/stress-test/modifications.json
+# .delta-lint/stress-test/landmine_map.html
+# .delta-lint/delta_lint_*.json
+```
+
 ### Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY
 
 **Do not wait for Step 2 to complete.** While the stress-test runs in background, add the following to `{repo_path}/CLAUDE.md` (create if not exists, append if exists):
@@ -224,9 +240,29 @@ for f in {affected_files_list}:
 cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --files {affected_files} --verbose --severity medium 2>&1
 ```
 
-### Step 4: 設計レビュー（サブエージェント）
+### Step 4: 設計レビュー（サブエージェント） + 中間報告
 
-Step 2-3 の分析結果をもとに、**サブエージェントを起動して設計レビュー**を行う。確認を求めず自動実行する。
+Step 2-3 の分析結果をもとに、**サブエージェントをバックグラウンドで起動して設計レビュー**を行う（`run_in_background: true`）。確認を求めず自動実行する。
+
+**サブエージェントの実行中、メインはユーザーに中間報告を行う。** 以下のフォーマットで報告し、ユーザーの関心事を引き出す：
+
+```
+🔄 設計レビューをバックグラウンドで実行中です。
+
+ここまでの分析で気になったポイント:
+  1. {Step 2-3 で発見した最も重要なリスク}
+  2. {2番目に重要なリスク}
+  3. {既存動作で変わりそうなこと}
+
+レビュー中に確認していること:
+  - 各 finding が本物かどうかの検証
+  - 既存ミドルウェアのスタイル・パターンとの整合性
+  - 必要なテストケースの洗い出し
+
+何か気になる点や、特に確認してほしいことはありますか？
+```
+
+ユーザーからの追加の懸念点や要望があれば、サブエージェントの結果と統合して Step 5 の提案に反映する。
 
 サブエージェントには以下のプロンプトを渡す：
 

@@ -100,20 +100,151 @@ def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
 
 
 def filter_source_files(files: list[str]) -> list[str]:
-    """Filter to source code files only (skip tests, configs, docs)."""
-    source_exts = {".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx", ".py", ".go", ".rs"}
+    """Filter to source code files using exclude-list approach.
+
+    Instead of an allow-list of extensions, exclude known non-source files.
+    This makes delta-lint language-agnostic (PHP, Ruby, Java, C#, etc.).
+    """
+    # Extensions to exclude (binary, data, config, docs, assets)
+    exclude_exts = {
+        # Binary / compiled
+        ".exe", ".dll", ".so", ".dylib", ".o", ".a", ".pyc", ".pyo",
+        ".class", ".jar", ".war", ".wasm", ".bin",
+        # Images / media
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp",
+        ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm",
+        # Fonts
+        ".woff", ".woff2", ".ttf", ".eot", ".otf",
+        # Data / serialization
+        ".json", ".yaml", ".yml", ".toml", ".xml", ".csv", ".tsv",
+        ".sql", ".sqlite", ".db",
+        # Docs / text
+        ".md", ".txt", ".rst", ".pdf", ".doc", ".docx",
+        # Config / build
+        ".lock", ".sum", ".mod",
+        ".env", ".ini", ".cfg", ".conf",
+        ".dockerignore", ".gitignore", ".editorconfig",
+        # Archives
+        ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
+        # Maps / generated
+        ".map", ".min.js", ".min.css",
+        # Certificates / keys
+        ".pem", ".crt", ".key", ".p12",
+        # Translation / i18n
+        ".po", ".mo", ".pot",
+        # Spreadsheet / office
+        ".xlsx", ".xls", ".pptx",
+        # Other non-source
+        ".heic", ".fig", ".cache", ".meta",
+    }
+
+    # Directory patterns to exclude (framework core, 3rd party, build artifacts)
+    # Reference: https://github.com/karesansui-u/agi-lab-skills-marketplace
+    exclude_dirs = {
+        # Version control
+        ".git",
+        # Package managers / dependencies
+        "node_modules", "vendor", "bower_components", "jspm_packages",
+        ".yarn", "packages", ".gem",
+        # CMS core (don't modify)
+        "wp-admin", "wp-includes", "wp-snapshots",  # WordPress
+        "core",                                       # Drupal 8+
+        "administrator",                              # Joomla
+        "typo3", "typo3_src", "fileadmin",            # TYPO3
+        # PHP frameworks
+        "storage", "bootstrap",              # Laravel
+        "var",                               # Symfony
+        "tmp",                               # CakePHP
+        "system",                            # CodeIgniter
+        "webroot",                           # CakePHP generated
+        # Python
+        "__pycache__", ".venv", "venv", "env", "site-packages",
+        ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        "staticfiles", "htmlcov", "migrations",
+        # Ruby / Rails
+        ".bundle", "bundle", "gems", "log",
+        "public/assets", "public/packs",     # Rails asset pipeline / Webpacker
+        "sorbet",                            # Sorbet RBI files
+        # Java / Kotlin / JVM
+        "target", "build", ".gradle", ".mvn", ".m2", "out",
+        ".idea", "classes", "test-classes",
+        "generated-sources", "generated-test-sources",
+        # Android
+        ".cxx", "intermediates", "outputs", "transforms",
+        "GeneratedPluginRegistrant",
+        # iOS / macOS
+        "DerivedData", "Pods", "Carthage", ".build",
+        "xcuserdata", "xcshareddata", "SourcePackages", "checkouts",
+        # .NET
+        "bin", "obj", ".nuget", "TestResults", "publish",
+        "BenchmarkDotNet.Artifacts", "_ReSharper", ".vs", "AppPackages",
+        # Frontend build
+        "dist", ".next", ".nuxt", ".output",  # .output = Nuxt 3
+        ".svelte-kit", ".vite", ".angular",
+        ".parcel-cache", ".cache", ".turbo", ".webpack",
+        "storybook-static", ".docusaurus", ".gatsby",
+        ".nyc_output",                       # Istanbul/NYC coverage
+        # Go
+        "pkg",
+        # Rust / Cargo
+        ".cargo", "registry", "debug", "release", "deps", "incremental",
+        # Infrastructure / IaC
+        ".terraform", ".terraform.d", ".pulumi", "cdk.out",
+        # Container / VM
+        ".vagrant", ".docker",
+        # Test / coverage artifacts
+        "coverage", "lcov-report", "__snapshots__", "test-results",
+        # Documentation artifacts
+        "_site", "site", "_build", "docs-dist", "api-docs",
+        # Unity
+        "Library", "Temp", "Obj", "Logs", "UserSettings", "MemoryCaptures",
+        # Unreal Engine
+        "Binaries", "Intermediate", "Saved", "DerivedDataCache",
+        # Flutter
+        "Flutter",
+        # Code generation
+        "generated", "proto-gen", "openapi-gen", "__generated__",
+        # Misc tool caches
+        ".eslintcache", ".stylelintcache", ".nx",
+        "cache", "logs",
+        # Assets (non-code)
+        "assets", "static", "public/uploads",
+    }
+
+    # Test file patterns
+    test_patterns = {
+        ".test.ts", ".test.js", ".test.tsx", ".test.jsx",
+        ".spec.ts", ".spec.js", ".spec.tsx", ".spec.jsx",
+        "_test.go", "_test.py", "_test.rb",
+        "Test.java", "Test.kt", "Test.cs",
+    }
+
     result = []
     for f in files:
         p = Path(f)
-        if p.suffix not in source_exts:
+
+        # Skip by extension
+        if p.suffix.lower() in exclude_exts:
             continue
+
+        # Skip files with no extension (Makefile, Dockerfile are ok)
+        if not p.suffix and p.name not in {"Makefile", "Dockerfile", "Rakefile", "Gemfile"}:
+            continue
+
+        # Skip excluded directories
+        parts = set(p.parts)
+        if parts & exclude_dirs:
+            continue
+
         # Skip test files
         name_lower = p.name.lower()
-        if name_lower.startswith("test") or name_lower.endswith((".test.ts", ".test.js", ".spec.ts", ".spec.js", "_test.go", "_test.py")):
+        if name_lower.startswith("test_") or name_lower.startswith("test."):
             continue
-        # Skip __tests__ directories
-        if "__tests__" in f or "__test__" in f:
+        if any(name_lower.endswith(pat.lower()) for pat in test_patterns):
             continue
+        if "__tests__" in f or "__test__" in f or "/tests/" in f or "/test/" in f:
+            continue
+
         result.append(f)
     return result
 
@@ -146,8 +277,6 @@ def extract_imports(content: str, filename: str) -> set[str]:
         # from .module import something
         for m in re.finditer(r"from\s+(\.[.\w]*)\s+import", content):
             imports.add(m.group(1))
-        # import .module (rare but possible in __init__.py)
-        # Standard absolute imports are skipped (can't resolve without package info)
 
     elif ext == ".go":
         for m in re.finditer(r'"([^"]+)"', content):
@@ -155,6 +284,39 @@ def extract_imports(content: str, filename: str) -> set[str]:
 
     elif ext == ".rs":
         for m in re.finditer(r"use\s+([\w:]+)", content):
+            imports.add(m.group(1))
+
+    elif ext == ".php":
+        # require/include variants
+        for m in re.finditer(r"""(?:require|include)(?:_once)?\s*[\(]?\s*['"]([^'"]+)['"]\s*[\)]?""", content):
+            imports.add(m.group(1))
+        # use Namespace\Class (PSR-4 style)
+        for m in re.finditer(r"use\s+([\w\\]+)", content):
+            imports.add(m.group(1))
+
+    elif ext == ".rb":
+        # require/require_relative
+        for m in re.finditer(r"""require(?:_relative)?\s+['"]([^'"]+)['"]""", content):
+            imports.add(m.group(1))
+
+    elif ext in (".java", ".kt"):
+        # import com.example.Foo
+        for m in re.finditer(r"import\s+([\w.]+)", content):
+            imports.add(m.group(1))
+
+    elif ext in (".cs",):
+        # using Namespace.Class
+        for m in re.finditer(r"using\s+([\w.]+)\s*;", content):
+            imports.add(m.group(1))
+
+    elif ext in (".c", ".cpp", ".h", ".hpp"):
+        # #include "local.h" (not <system.h>)
+        for m in re.finditer(r'#include\s+"([^"]+)"', content):
+            imports.add(m.group(1))
+
+    elif ext in (".swift",):
+        # import Module
+        for m in re.finditer(r"import\s+(\w+)", content):
             imports.add(m.group(1))
 
     # Filter to relative imports only (resolvable without package manager)
