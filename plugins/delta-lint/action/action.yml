@@ -8,6 +8,10 @@ inputs:
   anthropic_api_key:
     description: "Anthropic API key for Claude"
     required: true
+  mode:
+    description: "Action mode: review (comment only), suggest (comment + suggested changes), autofix (auto-commit fix)"
+    required: false
+    default: "review"
   severity:
     description: "Minimum severity to report: high, medium, low"
     required: false
@@ -24,14 +28,18 @@ inputs:
     description: "Post a comment even when no findings (true/false)"
     required: false
     default: "false"
+  fail_on_findings:
+    description: "Fail the workflow when findings are detected (true/false)"
+    required: false
+    default: "false"
 
 outputs:
   findings_count:
     description: "Number of findings detected"
     value: ${{ steps.scan.outputs.findings_count }}
-  comment_id:
-    description: "ID of the PR comment posted"
-    value: ${{ steps.comment.outputs.comment_id }}
+  fixed_count:
+    description: "Number of findings auto-fixed (autofix mode only)"
+    value: ${{ steps.scan.outputs.fixed_count }}
 
 runs:
   using: "composite"
@@ -45,7 +53,7 @@ runs:
       shell: bash
       run: pip install anthropic
 
-    - name: Run delta-lint scan
+    - name: Run delta-lint
       id: scan
       shell: bash
       env:
@@ -53,7 +61,9 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         python "${{ github.action_path }}/entrypoint.py" \
+          --mode "${{ inputs.mode }}" \
           --severity "${{ inputs.severity }}" \
           --model "${{ inputs.model }}" \
           --max-diff-files "${{ inputs.max_diff_files }}" \
-          --comment-on-clean "${{ inputs.comment_on_clean }}"
+          --comment-on-clean "${{ inputs.comment_on_clean }}" \
+          --fail-on-findings "${{ inputs.fail_on_findings }}"

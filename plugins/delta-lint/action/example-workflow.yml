@@ -1,6 +1,7 @@
 # .github/workflows/delta-lint.yml
 #
-# Example: Add this to your repository to auto-scan PRs for structural contradictions.
+# Add this to your repository to auto-scan PRs for structural contradictions.
+# Three modes available: review, suggest, autofix
 
 name: delta-lint
 
@@ -9,8 +10,8 @@ on:
     types: [opened, synchronize]
 
 permissions:
-  contents: read
-  pull-requests: write
+  contents: write       # needed for autofix (push commits)
+  pull-requests: write  # needed for review comments + suggestions
 
 jobs:
   scan:
@@ -18,13 +19,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for diff analysis
+          fetch-depth: 0
 
-      - name: delta-lint scan
+      - name: delta-lint
         uses: karesansui-u/agi-lab-skills-marketplace/plugins/delta-lint/action@main
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          severity: "high"          # high | medium | low
+
+          # --- Mode ---
+          # review  : Comment only (default, for teams)
+          # suggest : Comment + GitHub Suggested Changes inline
+          # autofix : Auto-commit fixes to the PR branch (for solo/vibe coding)
+          mode: "suggest"
+
+          severity: "high"
           # model: "claude-sonnet-4-20250514"
-          # max_diff_files: "20"    # Skip large PRs
+          # max_diff_files: "20"
+          # fail_on_findings: "false"
           # comment_on_clean: "false"
