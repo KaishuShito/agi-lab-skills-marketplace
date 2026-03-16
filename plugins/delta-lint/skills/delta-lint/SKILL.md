@@ -39,6 +39,8 @@ Initialize delta-lint for a repository. Creates a landmine map (risk heatmap) an
 
 **Trigger**: User says "delta init", "地雷マップ作って", "initialize delta-lint", or similar.
 
+**CRITICAL: This workflow is FULLY AUTONOMOUS. Do NOT ask the user for confirmation at any step (except if already initialized). Execute Steps 1→2→3 immediately in sequence without pausing.**
+
 ### Step 1: Check if already initialized
 
 ```bash
@@ -46,30 +48,27 @@ ls {repo_path}/.delta-lint/stress-test/results.json 2>/dev/null
 ```
 
 - If exists: Tell user "このリポは初期化済みです。再実行しますか？" and wait for confirmation.
-- If not: Proceed.
+- If not: **Immediately proceed to Step 2. Do NOT ask "実行しますか？" — the user already said "delta init", that IS the instruction.**
 
-### Step 2: Run stress-test (background)
+### Step 2: Run stress-test (background) — EXECUTE IMMEDIATELY
+
+**You MUST execute this Bash command right now. Do not explain what it does, do not ask for confirmation, just run it:**
 
 ```bash
 cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize 2>&1
 ```
 
-**Run this in background** (`run_in_background: true`). Set timeout to 600000 (10 min).
+Use `run_in_background: true` and `timeout: 600000`.
 
-The stress-test is fully autonomous:
-- Auto-determines modification count from repo size (no `--n` needed)
-- Saves checkpoints every 10 scans (results.json + landmine_map.html)
-- Generates focused modifications on discovered hotspots after initial broad scan
-- Auto-converges when no new files are discovered
+The script is fully autonomous — it auto-determines modification count, saves checkpoints every 10 scans, focuses on discovered hotspots, and auto-converges.
 
-Tell the user:
-- "stress-test をバックグラウンドで開始しました"
-- "10件ごとにマップが更新されます。完了したら通知します"
-- "この間、通常の作業を続けて大丈夫です"
+After launching, tell the user:
+- "stress-test をバックグラウンドで開始しました（$0、サブスクCLI）"
+- "完了したら通知します。この間、通常の作業を続けて大丈夫です"
 
-### Step 3: Add guard rules to CLAUDE.md
+### Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY
 
-While the stress-test runs, add the following to the **project-level** CLAUDE.md (`{repo_path}/CLAUDE.md`). Create the file if it doesn't exist. Append to the end if it already exists.
+**Do not wait for Step 2 to complete.** While the stress-test runs in background, add the following to `{repo_path}/CLAUDE.md` (create if not exists, append if exists):
 
 ```markdown
 
@@ -83,23 +82,20 @@ While the stress-test runs, add the following to the **project-level** CLAUDE.md
 
 ### Step 4: When stress-test completes
 
-When the background task finishes:
-1. Read the output to get the summary (e.g., "86/100 modifications triggered 222 findings")
+When the background task notification arrives:
+1. Read the output to get the summary
 2. Open the heatmap: `open {repo_path}/.delta-lint/stress-test/landmine_map.html`
-3. Report to user:
-   - Total scans, hit rate, findings count
-   - Top 3 highest-risk files with their risk scores
-   - "地雷マップが完成しました。以降、高リスクファイルの編集時に自動で警告します"
+3. Report: total scans, hit rate, top 3 high-risk files
+4. "地雷マップが完成しました。以降、高リスクファイルの編集時に自動で警告します"
 
 ### If stress-test fails
 
-If the background task fails:
-1. Read stderr output to diagnose
-2. Common issues:
-   - `claude -p failed`: Claude CLI not available → suggest `--backend api`
-   - Timeout: Repo too large → suggest `--n 30` to reduce scope
-   - Git error: Not a git repo → tell user to run from a git repository
-3. Report the error and suggest recovery
+1. Read stderr to diagnose
+2. Common fixes:
+   - `claude -p failed` → suggest `--backend api`
+   - Timeout → suggest `--n 30`
+   - Not a git repo → tell user
+3. **Auto-retry once** before reporting to user
 
 ---
 
