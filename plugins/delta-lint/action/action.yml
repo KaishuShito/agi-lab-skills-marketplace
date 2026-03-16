@@ -1,0 +1,59 @@
+name: "delta-lint"
+description: "Detect structural contradictions in PRs — places where one module's assumptions contradict another's behavior"
+branding:
+  icon: "shield"
+  color: "orange"
+
+inputs:
+  anthropic_api_key:
+    description: "Anthropic API key for Claude"
+    required: true
+  severity:
+    description: "Minimum severity to report: high, medium, low"
+    required: false
+    default: "high"
+  model:
+    description: "Claude model to use"
+    required: false
+    default: "claude-sonnet-4-20250514"
+  max_diff_files:
+    description: "Skip scan if PR has more changed files than this"
+    required: false
+    default: "20"
+  comment_on_clean:
+    description: "Post a comment even when no findings (true/false)"
+    required: false
+    default: "false"
+
+outputs:
+  findings_count:
+    description: "Number of findings detected"
+    value: ${{ steps.scan.outputs.findings_count }}
+  comment_id:
+    description: "ID of the PR comment posted"
+    value: ${{ steps.comment.outputs.comment_id }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install anthropic
+
+    - name: Run delta-lint scan
+      id: scan
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        python "${{ github.action_path }}/entrypoint.py" \
+          --severity "${{ inputs.severity }}" \
+          --model "${{ inputs.model }}" \
+          --max-diff-files "${{ inputs.max_diff_files }}" \
+          --comment-on-clean "${{ inputs.comment_on_clean }}"
