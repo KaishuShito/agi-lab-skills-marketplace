@@ -33,11 +33,29 @@ def get_event() -> dict:
 
 
 def get_pr_number() -> int:
-    return get_event()["pull_request"]["number"]
+    event = get_event()
+    if "pull_request" in event:
+        return event["pull_request"]["number"]
+    # issue_comment event: PR number is in issue.number
+    if "issue" in event:
+        return event["issue"]["number"]
+    raise RuntimeError("Cannot determine PR number from event")
 
 
 def get_pr_head_ref() -> str:
-    return get_event()["pull_request"]["head"]["ref"]
+    event = get_event()
+    if "pull_request" in event:
+        return event["pull_request"]["head"]["ref"]
+    # issue_comment event: fetch PR details to get head ref
+    repo = get_repo()
+    pr_number = event["issue"]["number"]
+    result = subprocess.run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.ref"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get PR head ref: {result.stderr}")
+    return result.stdout.strip()
 
 
 def get_repo() -> str:
@@ -70,6 +88,20 @@ def get_pr_changed_files() -> list[str]:
     if result.returncode != 0:
         raise RuntimeError(f"Failed to get PR files: {result.stderr}")
     return [f for f in result.stdout.strip().split("\n") if f]
+
+
+def add_reaction(comment_id: int, reaction: str = "eyes"):
+    """Add a reaction to a comment to signal the bot is working."""
+    repo = get_repo()
+    try:
+        subprocess.run(
+            ["gh", "api", "--method", "POST",
+             f"repos/{repo}/issues/comments/{comment_id}/reactions",
+             "-f", f"content={reaction}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        pass  # reaction is best-effort
 
 
 def set_output(name: str, value: str):
@@ -519,6 +551,18 @@ def main():
     parser.add_argument("--comment-on-clean", default="false")
     parser.add_argument("--fail-on-findings", default="false")
     args = parser.parse_args()
+
+    # 0. If triggered by comment, add 👀 reaction to acknowledge
+    event = get_event()
+    if "comment" in event:
+        add_reaction(event["comment"]["id"], "eyes")
+        # Override mode from comment text if specified: /delta-review suggest
+        comment_body = event["comment"].get("body", "")
+        for m in ["autofix", "suggest", "review"]:
+            if m in comment_body.lower():
+                args.mode = m
+                print(f"  Mode override from comment: {m}", file=sys.stderr)
+                break
 
     # 1. Get PR changed files
     print("Getting PR changed files...", file=sys.stderr)

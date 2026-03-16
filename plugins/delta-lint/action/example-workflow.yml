@@ -1,25 +1,35 @@
 # .github/workflows/delta-lint.yml
 #
-# Add this to your repository to auto-scan PRs for structural contradictions.
-# Three modes available: review, suggest, autofix
+# Auto-scan PRs for structural contradictions.
+# Supports: auto-trigger on PR + on-demand via /delta-review comment.
 
 name: delta-lint
 
 on:
   pull_request:
     types: [opened, synchronize]
+  issue_comment:
+    types: [created]
 
 permissions:
-  contents: write       # needed for autofix (push commits)
-  pull-requests: write  # needed for review comments + suggestions
+  contents: write
+  pull-requests: write
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # Run on PR events, OR on /delta-review comments on PRs
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '/delta-review'))
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # For issue_comment: checkout the PR branch, not the default branch
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || '' }}
 
       - name: delta-lint
         uses: karesansui-u/agi-lab-skills-marketplace/plugins/delta-lint/action@main
@@ -30,6 +40,11 @@ jobs:
           # review  : Comment only (default, for teams)
           # suggest : Comment + GitHub Suggested Changes inline
           # autofix : Auto-commit fixes to the PR branch (for solo/vibe coding)
+          #
+          # For /delta-review comments, mode can be overridden:
+          #   /delta-review          → uses default mode below
+          #   /delta-review suggest  → suggest mode
+          #   /delta-review autofix  → autofix mode
           mode: "suggest"
 
           severity: "high"
