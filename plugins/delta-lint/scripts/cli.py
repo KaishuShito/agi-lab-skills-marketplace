@@ -40,8 +40,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Load .env from candidate locations
 _env_candidates = [
-    Path(__file__).parent.parent / ".env",  # plugin root .env
-    Path.home() / ".env",                   # home directory fallback
+    Path(__file__).parent.parent / ".env",  # original location (技術的負債定量化PJT/.env)
+    Path("/Users/sunagawa/Project/ugentropy-papers/技術的負債定量化PJT/.env"),  # absolute fallback
 ]
 for _env_path in _env_candidates:
     if _env_path.exists():
@@ -138,6 +138,15 @@ def cmd_scan(args):
         print("No readable source files in context. Nothing to scan.", file=sys.stderr)
         sys.exit(0)
 
+    # Step 2.5: Semantic expansion (--semantic)
+    if args.semantic:
+        from semantic import expand_context_semantic
+        context = expand_context_semantic(
+            repo_path, source_files, context,
+            diff_target=args.diff_target,
+            verbose=args.verbose,
+        )
+
     # Step 3: Dry run - show context and exit
     if args.dry_run:
         print("=== DRY RUN: Context that would be sent to LLM ===\n", file=sys.stderr)
@@ -158,7 +167,8 @@ def cmd_scan(args):
     if args.verbose:
         print(f"Running detection with {args.model}...", file=sys.stderr)
 
-    findings = detect(context, repo_name=repo_name, model=args.model)
+    findings = detect(context, repo_name=repo_name, model=args.model,
+                       backend=args.backend)
 
     if args.verbose:
         print(f"  Raw findings: {len(findings)}", file=sys.stderr)
@@ -452,6 +462,18 @@ def main():
     scan_parser.add_argument(
         "--verbose", "-v", action="store_true",
         help="Show detailed progress information",
+    )
+    scan_parser.add_argument(
+        "--semantic", action="store_true",
+        help="Enable semantic search: extract implicit assumptions from diff "
+             "and find related files beyond import-based 1-hop dependencies. "
+             "Uses claude -p (subscription CLI, $0 cost).",
+    )
+    scan_parser.add_argument(
+        "--backend", default="cli",
+        choices=["cli", "api"],
+        help="LLM backend: cli (claude -p, $0, default) or api (SDK, pay-per-use). "
+             "Falls back to api if CLI not available.",
     )
 
     # --- suppress subcommand ---

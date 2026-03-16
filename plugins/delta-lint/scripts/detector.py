@@ -12,6 +12,7 @@ Design decisions:
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 try:
@@ -58,13 +59,15 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 def detect(context: ModuleContext, repo_name: str = "",
-           model: str = "claude-sonnet-4-20250514") -> list[dict]:
+           model: str = "claude-sonnet-4-20250514",
+           backend: str = "cli") -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
         context: ModuleContext from retrieval layer
         repo_name: Optional repository name for context
         model: Model identifier
+        backend: "cli" (claude -p, $0, default), "api" (SDK/HTTP, pay-per-use)
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
@@ -72,17 +75,46 @@ def detect(context: ModuleContext, repo_name: str = "",
     system_prompt = load_system_prompt()
     user_prompt = build_user_prompt(context, repo_name)
 
-    if anthropic is not None:
+    if backend == "cli" and not _cli_available():
+        backend = "api"
+
+    if backend == "cli":
+        raw = _detect_cli(system_prompt, user_prompt)
+    elif anthropic is not None:
         raw = _detect_anthropic_sdk(system_prompt, user_prompt, model)
     elif req_lib is not None:
         raw = _detect_requests(system_prompt, user_prompt, model)
     else:
         raise RuntimeError(
-            "Either 'anthropic' or 'requests' package is required. "
-            "Install with: pip install anthropic"
+            "No backend available. Install 'anthropic' package or ensure "
+            "'claude' CLI is on PATH."
         )
 
     return _parse_response(raw)
+
+
+def _cli_available() -> bool:
+    """Check if claude CLI is available on PATH."""
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _detect_cli(system_prompt: str, user_prompt: str) -> str:
+    """Call Claude via claude -p (subscription CLI, $0 cost)."""
+    prompt = system_prompt + "\n\n" + user_prompt
+    result = subprocess.run(
+        ["claude", "-p", prompt],
+        capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
+    return result.stdout
 
 
 def _detect_anthropic_sdk(system_prompt: str, user_prompt: str, model: str) -> str:
