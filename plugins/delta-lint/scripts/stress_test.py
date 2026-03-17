@@ -5,9 +5,10 @@ Generates virtual modifications and runs scan on each to build a
 per-file "landmine map" showing which areas break most easily.
 
 Pipeline:
-  Step 0: Structural analysis (claude -p, $0)
-  Step 1: Virtual modification generation (claude -p, $0)
-  Step 2: Scan each modification (existing detect engine, claude -p, $0)
+  Step 0:   Structural analysis (claude -p, $0)
+  Step 0.5: Existing bug scan — scan hotspot clusters for current contradictions
+  Step 1:   Virtual modification generation (claude -p, $0)
+  Step 2:   Scan each modification (existing detect engine, claude -p, $0)
 
 All LLM calls use claude -p (subscription CLI) for $0 cost.
 """
@@ -28,7 +29,6 @@ from retrieval import (
     _read_file_safe,
 )
 from detector import detect
-from aggregate import aggregate_results, build_treemap_data, save_aggregate
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +136,190 @@ def analyze_structure(repo_path: str, verbose: bool = False) -> dict:
         print(f"  Identified {len(modules)} modules, {len(hotspots)} hotspots", file=sys.stderr)
 
     return structure
+
+
+# ---------------------------------------------------------------------------
+# Step 0.5: Existing bug scan — scan hotspot clusters directly
+# ---------------------------------------------------------------------------
+
+_EXISTING_LANG_INSTRUCTIONS = {
+    "en": "",
+    "ja": (
+        "## Language\n\n"
+        "Write the `contradiction`, `user_impact`, `reproduction`, and `internal_evidence` fields in **Japanese**. "
+        "Keep `pattern`, `severity`, `bug_class`, and `location` fields in English/emoji. "
+        "Example: `\"user_impact\": \"デフォルト設定でLoRAファインチューニングを実行するとAttributeErrorでクラッシュする\"`"
+    ),
+}
+
+
+def _load_existing_prompt(lang: str = "en") -> str:
+    """Load the existing-bug-specific detection prompt."""
+    prompt = (PROMPT_DIR / "detect_existing.md").read_text(encoding="utf-8")
+    lang_instruction = _EXISTING_LANG_INSTRUCTIONS.get(lang, "")
+    return prompt.replace("{lang_instruction}", lang_instruction)
+
+
+def _scan_cluster(
+    cluster: dict,
+    index: int,
+    total: int,
+    repo_path: str,
+    backend: str,
+    verbose: bool,
+    lang: str = "en",
+) -> dict:
+    """Scan a file cluster for existing contradictions. Thread-safe.
+
+    Uses detect_existing.md prompt which classifies findings as:
+    🔴 実バグ / 🟡 サイレント障害 / ⚪ 潜在リスク
+    and requires concrete user_impact and reproduction fields.
+    """
+    center = cluster["center"]
+    files = cluster["files"]
+
+    if verbose:
+        print(f"[step 0.5] [{index}/{total}] Scanning cluster: {center}", file=sys.stderr)
+
+    last_error = None
+    for attempt in range(1 + MAX_RETRIES):
+        try:
+            context = build_context(repo_path, files)
+
+            if not context.target_files:
+                if verbose:
+                    print(f"  [{index}/{total}] Skipped (no readable files)", file=sys.stderr)
+                return {"cluster": cluster, "findings": []}
+
+            # Use existing-bug-specific prompt (not the stress-test one)
+            system_prompt = _load_existing_prompt(lang=lang)
+            from detector import build_user_prompt, _parse_response, _detect_cli, _cli_available
+            user_prompt = build_user_prompt(context, repo_name=Path(repo_path).name)
+
+            if backend == "cli" and _cli_available():
+                raw = _detect_cli(system_prompt, user_prompt)
+            else:
+                # Fallback to standard detect with default prompt
+                findings = detect(
+                    context,
+                    repo_name=Path(repo_path).name,
+                    backend=backend,
+                )
+                findings = [f for f in findings if not f.get("parse_error")]
+                if verbose:
+                    print(f"  [{index}/{total}] Found {len(findings)} finding(s) (fallback prompt)", file=sys.stderr)
+                return {"cluster": cluster, "findings": findings}
+
+            findings = _parse_response(raw)
+            findings = [f for f in findings if not f.get("parse_error")]
+
+            if verbose:
+                print(f"  [{index}/{total}] Found {len(findings)} finding(s)", file=sys.stderr)
+
+            return {"cluster": cluster, "findings": findings}
+
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                if verbose:
+                    print(f"  [{index}/{total}] Retry ({e})", file=sys.stderr)
+            else:
+                if verbose:
+                    print(f"  [{index}/{total}] Failed: {e}", file=sys.stderr)
+
+    return {"cluster": cluster, "findings": [], "error": str(last_error)}
+
+
+def scan_existing(
+    structure: dict,
+    repo_path: str,
+    backend: str = "cli",
+    verbose: bool = False,
+    parallel: int = 1,
+    lang: str = "en",
+) -> list[dict]:
+    """Scan hotspot file clusters for existing contradictions.
+
+    Uses structure.json hotspots + module dependencies to build clusters,
+    then runs detect() on each cluster WITHOUT virtual modifications.
+    This finds bugs that exist RIGHT NOW in the codebase.
+    """
+    if verbose:
+        print("[step 0.5] Scanning for existing contradictions...", file=sys.stderr)
+
+    hotspots = structure.get("hotspots", [])
+    modules = structure.get("modules", [])
+
+    if not hotspots:
+        if verbose:
+            print("  No hotspots found, skipping existing scan", file=sys.stderr)
+        return []
+
+    # Build dependency lookup from structure.json modules
+    dep_map: dict[str, list[str]] = {}
+    for mod in modules:
+        path = mod.get("path", "")
+        deps = mod.get("dependencies", [])
+        if path:
+            dep_map[path] = deps
+
+    # Build clusters: each hotspot + its dependencies
+    clusters: list[dict] = []
+    seen_centers: set[str] = set()
+
+    for hs in hotspots:
+        center = hs.get("path", hs.get("file", ""))
+        if not center or center in seen_centers:
+            continue
+        seen_centers.add(center)
+
+        files = [center]
+        # Add dependencies from structure.json
+        for dep in dep_map.get(center, []):
+            if dep not in files:
+                files.append(dep)
+
+        # Also add modules that depend ON this hotspot (reverse deps)
+        for mod in modules:
+            if center in mod.get("dependencies", []):
+                mod_path = mod.get("path", "")
+                if mod_path and mod_path not in files:
+                    files.append(mod_path)
+
+        clusters.append({
+            "center": center,
+            "reason": hs.get("reason", ""),
+            "files": files,
+        })
+
+    if verbose:
+        print(f"  {len(clusters)} hotspot clusters to scan", file=sys.stderr)
+
+    total = len(clusters)
+
+    if parallel <= 1:
+        return [
+            _scan_cluster(c, i, total, repo_path, backend, verbose, lang=lang)
+            for i, c in enumerate(clusters, 1)
+        ]
+
+    # Parallel execution
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if verbose:
+        print(f"[step 0.5] Running {total} cluster scans with {parallel} workers", file=sys.stderr)
+
+    results = [None] * total
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = {
+            pool.submit(_scan_cluster, c, i, total, repo_path, backend, verbose, lang): i - 1
+            for i, c in enumerate(clusters, 1)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            results[idx] = future.result()
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +714,7 @@ def run_stress_test(
     output_dir: str | None = None,
     parallel: int = 1,
     visualize: bool = False,
+    lang: str = "en",
 ) -> list[dict]:
     """Main entry point — autonomous adaptive stress-test.
 
@@ -556,6 +741,30 @@ def run_stress_test(
     )
     if verbose:
         print(f"  Saved: {structure_path}", file=sys.stderr)
+
+    # Step 0.5: Scan existing contradictions in hotspot clusters
+    existing_results = scan_existing(
+        structure, repo_path,
+        backend=backend, verbose=verbose, parallel=parallel, lang=lang,
+    )
+    existing_findings_path = out / "existing_findings.json"
+    existing_data = {
+        "metadata": {
+            "repo": repo_path,
+            "repo_name": Path(repo_path).name,
+            "timestamp": timestamp,
+            "n_clusters": len(existing_results),
+        },
+        "results": existing_results,
+    }
+    existing_findings_path.write_text(
+        json.dumps(existing_data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    if verbose:
+        n_findings = sum(len(r.get("findings", [])) for r in existing_results)
+        n_hits = sum(1 for r in existing_results if r.get("findings"))
+        print(f"  Saved: {existing_findings_path}", file=sys.stderr)
+        print(f"  {n_hits}/{len(existing_results)} clusters had existing contradictions ({n_findings} total)", file=sys.stderr)
 
     # Auto-determine n from repo size if not specified
     if n_modifications <= 0:
@@ -658,6 +867,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--parallel", type=int, default=1, help="Concurrent scans (default: 1, recommended max: 10)")
     parser.add_argument("--visualize", action="store_true", help="Generate HTML heatmap after scan")
+    parser.add_argument("--lang", default="en", choices=["en", "ja"], help="Output language for findings (default: en)")
     parser.add_argument("--structure-only", action="store_true", help="Run only structure analysis (Step 0), then exit")
 
     args = parser.parse_args()
@@ -688,6 +898,7 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         parallel=args.parallel,
         visualize=args.visualize,
+        lang=args.lang,
     )
 
     # Summary output

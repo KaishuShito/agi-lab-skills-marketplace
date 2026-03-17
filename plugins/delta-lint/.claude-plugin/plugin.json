@@ -1,6 +1,6 @@
 {
   "name": "delta-lint",
-  "description": "構造矛盾を自律検出し、Issue起票・修正PR作成まで自走するコード品質エージェント。リポジトリURLかdiffを渡すだけで、追加指示なしで最後まで進めます。",
+  "description": "ソースコード間の構造矛盾（暗黙の前提の不整合）をLLM分析で検出するコード品質ツール。scan/suppress/findings/stress-test/地雷マップ可視化をサポート。",
   "version": "0.1.0",
   "author": {
     "name": "sunagawa"

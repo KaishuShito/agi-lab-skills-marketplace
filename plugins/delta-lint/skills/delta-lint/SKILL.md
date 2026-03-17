@@ -10,7 +10,7 @@ description: >
   Also triggers when user proposes any code change (new feature, bug fix,
   refactoring, performance improvement, etc.) and delta-lint has been
   initialized (`.delta-lint/` exists).
-  Supports init, plan, scan, suppress add/list/check workflows.
+  Supports init, plan, scan, suppress add/list/check, findings workflows.
 ---
 
 # delta-lint: Structural Contradiction Detector
@@ -21,13 +21,13 @@ delta-lint detects structural contradictions between source code modules — pla
 
 - Python 3.11+
 - `anthropic` package (`pip install anthropic`)
-- `ANTHROPIC_API_KEY` environment variable set (or in `技術的負債定量化PJT/.env`)
+- `ANTHROPIC_API_KEY` environment variable set (or in a `.env` file in the plugin root or cwd)
 - Optional: `pyyaml` for suppress.yml (falls back to JSON format)
 
 ## Script Location
 
-All scripts are in: `scripts/` (relative to this skill folder).
-The absolute path is: `~/.claude/skills/delta-lint/scripts/`.
+All scripts are in: `scripts/` (relative to the plugin/skill root — wherever this plugin is installed).
+Run from the plugin root: `python scripts/cli.py ...` or `cd scripts && python cli.py ...`.
 The prompt template is at: `scripts/prompts/detect.md`.
 
 ## Critical: Exit Code Interpretation
@@ -108,6 +108,65 @@ for c in constraints[:5]:
   矛盾が見つかり次第、随時報告します。
   この間、通常の作業を続けて大丈夫です。
   なにか確認したいことはありますか？
+```
+
+### Step 2.2: 既存バグの表示 — CRITICAL UX STEP
+
+**existing_findings.json が生成されるのを待って読む。** ホットスポットの直接スキャン結果で、構造分析の直後（structure.json の後）に生成される。通常 structure.json から1〜3分後に完了する。
+
+```bash
+for i in $(seq 1 90); do [ -f "{repo_path}/.delta-lint/stress-test/existing_findings.json" ] && break; sleep 2; done && cd {repo_path} && python3 -c "
+import json
+d=json.load(open('.delta-lint/stress-test/existing_findings.json'))
+results=d.get('results',[])
+hits=[r for r in results if r.get('findings')]
+total_f=sum(len(r['findings']) for r in hits)
+print(f'clusters: {len(results)}')
+print(f'hits: {len(hits)}')
+print(f'findings: {total_f}')
+for r in results:
+    for f in r.get('findings',[]):
+        bc=f.get('bug_class','⚪ 潜在リスク')
+        pat=f.get('pattern','?')
+        loc=f.get('location',{})
+        fa=loc.get('file_a','')
+        fb=loc.get('file_b','')
+        ui=f.get('user_impact','')[:150]
+        rp=f.get('reproduction','')[:100]
+        print(f'  {bc} | {pat} | {fa} vs {fb}')
+        print(f'    影響: {ui}')
+        print(f'    再現: {rp}')
+"
+```
+
+**findings がある場合、bug_class ごとにグループ化してユーザーに報告する。これは init の最大の価値 — 「今すでに壊れている箇所」の報告:**
+
+```
+🐛 既存の構造矛盾を {total_findings} 件検出:
+
+🔴 実バグ（今壊れている）:
+  パターン{pattern}: {file_a} vs {file_b}
+  影響: {user_impact}
+  再現: {reproduction}
+
+🟡 サイレント障害（エラーなく間違った結果）:
+  パターン{pattern}: {file_a} vs {file_b}
+  影響: {user_impact}
+  再現: {reproduction}
+
+⚪ 潜在リスク（特定条件で発火）:
+  パターン{pattern}: {file_a} vs {file_b}
+  影響: {user_impact}
+  再現: {reproduction}
+
+🔴 の項目は早期の確認・修正をお勧めします。
+🟡 はエラーなく動作しているため気づきにくいですが、影響を確認してください。
+```
+
+**findings がない場合は:**
+
+```
+✅ ホットスポットの直接スキャン: 既存の構造矛盾は検出されませんでした。
 ```
 
 ### Step 2.5: Add .gitignore for .delta-lint/ — EXECUTE IMMEDIATELY
@@ -195,8 +254,9 @@ When the background task notification arrives:
 ✅ delta-lint 初期化完了
 
 📊 結果サマリー:
-- スキャン: {hit_mods}/{total_mods} 件の仮想改修で矛盾を検出（ヒット率 {hit_rate}%）
-- 発見: {total_findings} 件の構造矛盾
+- 既存バグ: {existing_findings} 件の構造矛盾を現在のコードから検出
+- ストレステスト: {hit_mods}/{total_mods} 件の仮想改修で矛盾を検出（ヒット率 {hit_rate}%）
+- 発見: {total_findings} 件の構造矛盾（改修リスク）
 - 対象: {n_files_at_risk} ファイルにリスクあり
 
 🔴 高リスクファイル TOP 3:
@@ -498,12 +558,83 @@ For findings tagged with `[EXPIRED SUPPRESS]`:
 - Explain that this was previously suppressed but the code has changed
 - Recommend the user review whether the contradiction still applies
 
-### Step 6: Offer next actions
+### Step 5.5: Auto-triage (AUTONOMOUS — do NOT ask user)
 
-Based on the results, suggest:
-- **If findings exist**: "suppress したい finding があれば番号を教えてください（例: `/delta-lint suppress 3`）"
-- **If expired suppressions exist**: "期限切れの suppress があります。再確認して re-suppress するか、対応を検討してください"
-- **If no findings**: Report clean result and mention suppressed/filtered counts if any
+**findings が 1件以上ある場合、確認を求めず自動で全 findings をトリアージする。**
+各 finding について以下の3チェックを並列で実行し、liveness ラベルを付与する。
+
+#### Check 1: Dead code（caller ゼロ）
+
+finding の関数・メソッド・クラスについて、呼び出し元が存在するか確認する:
+
+```bash
+# 関数名/メソッド名で grep（finding の location から抽出）
+cd {repo_path} && grep -rn "{function_name}" --include="*.py" --include="*.ts" --include="*.js" --include="*.go" --include="*.rs" | grep -v "def {function_name}\|function {function_name}\|fn {function_name}" | head -5
+```
+
+- caller が 0件 → `🪦 DEAD` — 呼び出し元なし、修正しても影響ゼロ
+- caller がコメントアウトのみ → `🪦 DEAD` — 実質デッドコード
+- caller あり → Check 2 へ
+
+#### Check 2: Already fixed（他ブランチで修正済み）
+
+主要ブランチ（develop, dev, next, staging 等）で同じコードを確認:
+
+```bash
+# 主要ブランチの存在確認
+cd {repo_path} && git branch -r | grep -E "origin/(develop|dev|next|staging)" | head -5
+```
+
+存在するブランチがあれば:
+```bash
+# 該当行が修正済みか差分確認
+cd {repo_path} && git diff main..origin/{branch} -- {file_path} | head -30
+```
+
+- 修正済み → `✅ FIXED in {branch}` — PR/Issue にする価値なし（自リポなら cherry-pick 検討）
+- 未修正 → Check 3 へ
+
+#### Check 3: Reachability（実際に到達可能か）
+
+finding の条件が現在の設定/コードで実際に発火するか確認:
+
+- **デフォルト値で発火**: 追加設定なしで再現 → `🔴 LIVE`
+- **特定の設定/入力で発火**: 条件は限定的だが到達可能 → `🟡 DORMANT`（条件を明記）
+- **現設定では到達不能**: 将来の変更で発火する可能性のみ → `🟡 DORMANT`（リスクは注記）
+
+#### Triage 結果の表示
+
+全 finding のトリアージ完了後、以下のフォーマットでユーザーに報告:
+
+```
+🔬 自動トリアージ結果:
+
+  #1 [🔴 LIVE]    ④ Guard Non-Propagation — handler.ts vs validator.ts
+     caller: 3箇所, デフォルト設定で再現可能
+  #2 [🟡 DORMANT] ② Semantic Mismatch — config.py vs loader.py
+     caller: 1箇所, recursive=False を渡した時のみ発火（現在の呼び出し元はすべて True）
+  #3 [🪦 DEAD]    ① Asymmetric Defaults — old_handler.ts vs utils.ts
+     caller: 0箇所（コメントアウト済み）
+  #4 [✅ FIXED]   ④ Guard Non-Propagation — auth.go vs middleware.go
+     develop ブランチで修正済み（commit abc1234）
+
+🎯 対応推奨: #1 のみ要対応。#2 は条件付きリスク、#3-#4 は無視可。
+```
+
+**LIVE の finding のみを Step 6 で findings add する。** DEAD/FIXED は記録しない（ノイズ削減）。
+DORMANT は findings add するが `--finding-severity` を1段下げる（high→medium, medium→low）。
+
+### Step 6: Record findings and offer next actions
+
+**If findings exist**:
+1. まず `findings list --repo-name {repo}` で既存の記録を確認し、重複を避ける
+2. 確認を求めず、**LIVE + DORMANT の findings のみ**を自動で `findings add` する（DEAD/FIXED は記録しない）
+3. DORMANT は `--finding-severity` を1段下げて記録する（high→medium, medium→low）
+4. 記録完了後、suppress の提案を行う: "suppress したい finding があれば番号を教えてください（例: `/delta-lint suppress 3`）"
+
+**If expired suppressions exist**: "期限切れの suppress があります。再確認して re-suppress するか、対応を検討してください"
+
+**If no findings**: Report clean result and mention suppressed/filtered counts if any
 
 ---
 
@@ -553,7 +684,104 @@ Present each entry with: ID, pattern, files, why_type, why, date.
 
 ---
 
-## Workflow 4: Suppress Check (`/delta-lint suppress --check`)
+## Workflow 4: Findings (`/delta-lint findings`)
+
+**JSONL ベースのバグ/矛盾記録システム。** 複数LLMがリポジトリ横断で発見を追記・管理できる。
+
+**Trigger**: "findings", "バグ記録", "発見を記録", "finding を追加" 等。scan 後に自動提案してもよい。
+
+### Storage
+
+```
+.delta-lint/findings/
+├── _index.md              # 全リポの概要（自動生成）
+├── Codium-ai__pr-agent.jsonl
+├── paul-gauthier__aider.jsonl
+└── ...
+```
+
+各 `.jsonl` は1行1JSON（追記専用）。同じ `id` で複数行 = イベントログ（最新行が正）。
+
+### Subcommands
+
+#### findings add — 発見を記録
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings add \
+  --repo "{base_path}" \
+  --repo-name "owner/repo" \
+  --file "src/handler.ts" \
+  --line 42 \
+  --type bug \
+  --finding-severity high \
+  --pattern "④ Guard Non-Propagation" \
+  --title "TTL refresh guard condition inverted" \
+  --description "is_alive() returns True for expired entries" \
+  --status verified \
+  --url "https://github.com/owner/repo/pull/123" \
+  --found-by "claude-opus" \
+  --verified
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `--repo` | No | Base path（`.delta-lint/findings/` の親） |
+| `--repo-name` | Yes | リポジトリ名（`owner/repo` 形式推奨） |
+| `--file` | Yes | 発見箇所のファイルパス |
+| `--line` | No | 行番号 |
+| `--type` | No | `bug` / `contradiction` / `suspicious` / `enhancement` |
+| `--finding-severity` | No | `high` / `medium` / `low` |
+| `--pattern` | No | 矛盾パターン（①〜⑥） |
+| `--title` | Yes | 短いタイトル |
+| `--description` | No | 詳細説明 |
+| `--status` | No | `found` / `verified` / `submitted` / `merged` / `rejected` / `wontfix` / `duplicate` |
+| `--url` | No | GitHub Issue/PR URL |
+| `--found-by` | No | 発見者（`claude-opus` 等） |
+| `--verified` | No | コード確認済みフラグ |
+
+#### findings list — 一覧表示
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings list --repo "{base_path}" [--repo-name "owner/repo"] [--status submitted] [--type bug] [--format json]
+```
+
+#### findings update — ステータス更新
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings update --repo "{base_path}" --repo-name "owner/repo" {finding_id} {new_status} [--url "https://..."]
+```
+
+例: PR 提出後に `submitted` に更新、マージ後に `merged` に更新。
+
+#### findings search — キーワード検索
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings search --repo "{base_path}" "TTL"
+```
+
+#### findings stats — 統計
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings stats --repo "{base_path}" [--repo-name "owner/repo"] [--format json]
+```
+
+#### findings index — _index.md 再生成
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py findings index --repo "{base_path}"
+```
+
+### LLM ワークフロー統合
+
+**scan 完了後**: findings が検出された場合、確認を求めず自動で `findings add` を全件実行する（Workflow 1 Step 6 参照）。
+**Issue/PR 提出後**: `findings update {id} submitted --url {url}` でステータス更新。
+**マージ確認後**: `findings update {id} merged` でステータス更新。
+
+**重複防止**: `add` 前に `findings list --repo-name {repo}` で既存 ID を確認する。同じ `id` + 同じ `status` の追記はエラーになる。
+
+---
+
+## Workflow 5: Suppress Check (`/delta-lint suppress --check`)
 
 ```bash
 cd ~/.claude/skills/delta-lint/scripts && python cli.py suppress --check --repo "{repo_path}" 2>&1
@@ -579,6 +807,34 @@ If expired entries found:
 
 ---
 
+## Configuration File
+
+Place `.delta-lint/config.json` in the repo root to set defaults. CLI flags always override config values.
+
+```json
+{
+  "lang": "ja",
+  "backend": "cli",
+  "severity": "medium",
+  "model": "claude-sonnet-4-20250514",
+  "verbose": false,
+  "semantic": false
+}
+```
+
+All fields are optional — only include what you want to override.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `lang` | `"en"` \| `"ja"` | Output language for finding descriptions |
+| `backend` | `"cli"` \| `"api"` | LLM backend |
+| `severity` | `"high"` \| `"medium"` \| `"low"` | Minimum severity to display |
+| `model` | string | Detection model |
+| `verbose` | bool | Detailed progress output |
+| `semantic` | bool | Enable semantic search |
+
+---
+
 ## Argument Reference
 
 See [suppress-design.md](references/suppress-design.md) for the full suppress mechanism design.
@@ -596,6 +852,8 @@ See [suppress-design.md](references/suppress-design.md) for the full suppress me
 | `--verbose` | false | Detailed progress |
 | `--log-dir` | `.delta-lint/` | Log directory |
 | `--semantic` | false | Enable semantic search beyond import-based 1-hop |
+| `--backend` | `cli` | LLM backend: `cli` (claude -p, $0) or `api` (SDK, pay-per-use) |
+| `--lang` | `en` | Output language for findings: `en` (English) or `ja` (Japanese) |
 
 ### Suppress
 | Flag | Default | Description |

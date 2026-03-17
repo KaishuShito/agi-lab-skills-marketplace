@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>&delta;-lint Landmine Map: $repo_name</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  background: #0c0e13;
+  color: #c9d1d9;
+  height: 100vh;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: 1fr 320px;
+}
+
+/* ── Header ── */
+.header {
+  grid-column: 1 / -1;
+  padding: 10px 20px;
+  background: #11131a;
+  border-bottom: 1px solid #1e2430;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.logo {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.logo .delta {
+  font-size: 22px;
+  font-weight: 300;
+  color: #00d97e;
+}
+.logo .title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  letter-spacing: 0.3px;
+}
+.logo .repo {
+  font-size: 12px;
+  color: #4a5568;
+  margin-left: 4px;
+}
+
+/* KPI cards row */
+.kpi-row {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 14px;
+  background: #161922;
+  border: 1px solid #1e2430;
+  border-radius: 6px;
+  min-width: 80px;
+}
+.kpi .kpi-val {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.kpi .kpi-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #4a5568;
+  margin-top: 1px;
+}
+.kpi.red .kpi-val { color: #ff4757; }
+.kpi.amber .kpi-val { color: #ffa502; }
+.kpi.green .kpi-val { color: #00d97e; }
+.kpi.blue .kpi-val { color: #4dabf7; }
+
+/* ── Center area: treemap + pattern chart ── */
+.center {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Treemap */
+#treemap-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+.tm-cell {
+  position: absolute;
+  overflow: hidden;
+  cursor: pointer;
+  transition: filter 0.12s, box-shadow 0.12s;
+  border-radius: 2px;
+}
+.tm-cell:hover {
+  filter: brightness(1.25);
+  box-shadow: 0 0 0 1px rgba(0,217,126,0.5);
+  z-index: 10;
+}
+.tm-cell.selected {
+  box-shadow: 0 0 0 2px #00d97e, 0 0 12px rgba(0,217,126,0.25);
+  z-index: 20;
+}
+.tm-label {
+  padding: 2px 4px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.85);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.tm-hits {
+  padding: 0 4px;
+  font-size: 9px;
+  color: rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+.tm-group-label {
+  position: absolute;
+  font-size: 10px;
+  font-weight: 600;
+  color: #4a5568;
+  padding: 0 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Pattern distribution bar */
+.pattern-bar {
+  height: 56px;
+  border-top: 1px solid #1e2430;
+  background: #11131a;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.pattern-bar .pb-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #4a5568;
+  flex-shrink: 0;
+  width: 65px;
+}
+.pb-chart {
+  flex: 1;
+  display: flex;
+  height: 28px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #161922;
+}
+.pb-segment {
+  height: 100%;
+  position: relative;
+  transition: flex 0.3s;
+  cursor: default;
+}
+.pb-segment:hover { filter: brightness(1.3); }
+.pb-segment .pb-seg-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pb-legend {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: #718096;
+  flex-shrink: 0;
+}
+.pb-legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+
+/* ── Right panel ── */
+.right-panel {
+  grid-row: 2 / 4;
+  background: #11131a;
+  border-left: 1px solid #1e2430;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.panel-tabs {
+  display: flex;
+  border-bottom: 1px solid #1e2430;
+  flex-shrink: 0;
+}
+.panel-tab {
+  flex: 1;
+  padding: 9px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4a5568;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.panel-tab:hover { color: #718096; }
+.panel-tab.active {
+  color: #00d97e;
+  border-bottom-color: #00d97e;
+}
+.panel-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+.panel-scroll::-webkit-scrollbar { width: 3px; }
+.panel-scroll::-webkit-scrollbar-thumb { background: #1e2430; border-radius: 2px; }
+
+/* Tab contents */
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+
+/* Ranking */
+.rank-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.025);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.rank-item:hover { background: rgba(0,217,126,0.04); }
+.rank-item.selected { background: rgba(0,217,126,0.08); border-left: 2px solid #00d97e; padding-left: 10px; }
+.rank-num {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2d3748;
+  min-width: 20px;
+  text-align: right;
+}
+.rank-item:nth-child(-n+3) .rank-num { color: #ff4757; }
+.rank-item:nth-child(n+4):nth-child(-n+6) .rank-num { color: #ffa502; }
+.rank-info { flex: 1; min-width: 0; }
+.rank-path {
+  font-size: 10.5px;
+  color: #a0aec0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rank-path .dir { color: #2d3748; }
+.rank-meta {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 9.5px;
+  color: #4a5568;
+}
+.rank-badge {
+  font-weight: 700;
+  padding: 0px 4px;
+  border-radius: 3px;
+  font-size: 9.5px;
+}
+.rank-badge.high { background: rgba(255,71,87,0.12); color: #ff4757; }
+.rank-badge.medium { background: rgba(255,165,2,0.12); color: #ffa502; }
+.rank-badge.low { background: rgba(0,217,126,0.08); color: #00d97e; }
+.rank-cat {
+  font-size: 9px;
+  padding: 0px 4px;
+  border-radius: 3px;
+  background: rgba(77,171,247,0.1);
+  color: #4dabf7;
+  white-space: nowrap;
+}
+.rank-bar-wrap {
+  width: 40px;
+  height: 3px;
+  background: #1a1d24;
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.rank-bar-fill { height: 100%; border-radius: 2px; }
+
+/* Detail pane */
+.detail-pane { padding: 14px; }
+.detail-back {
+  background: none;
+  border: 1px solid #1e2430;
+  color: #718096;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  margin-bottom: 10px;
+}
+.detail-back:hover { color: #00d97e; border-color: rgba(0,217,126,0.3); }
+.detail-path {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  word-break: break-all;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+.detail-stats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.detail-chip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #161922;
+  border: 1px solid #1e2430;
+  color: #a0aec0;
+}
+.detail-chip b { color: #e2e8f0; }
+.detail-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #4a5568;
+  margin: 12px 0 6px;
+}
+.finding-card {
+  background: #161922;
+  border: 1px solid #1e2430;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 6px;
+}
+.fc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.fc-pattern {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #ffa502;
+}
+.fc-sev {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.fc-sev.high { background: rgba(255,71,87,0.12); color: #ff4757; }
+.fc-sev.medium { background: rgba(255,165,2,0.12); color: #ffa502; }
+.fc-sev.low { background: rgba(0,217,126,0.08); color: #00d97e; }
+.fc-bug-class {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255,71,87,0.12);
+  color: #ff6b81;
+}
+.fc-desc {
+  font-size: 10.5px;
+  color: #718096;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.fc-impact {
+  font-size: 10.5px;
+  color: #a0aec0;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(255,71,87,0.04);
+  border-radius: 4px;
+  border-left: 2px solid #ff4757;
+}
+.fc-impact-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: #ff6b81;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.fc-locations {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #4a5568;
+}
+.fc-locations code {
+  background: #1a1d24;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  color: #a0aec0;
+}
+.fc-trigger {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #1e2430;
+  font-size: 10px;
+  color: #4a5568;
+  font-style: italic;
+}
+.bug-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(255,71,87,0.12);
+  color: #ff4757;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.more-findings {
+  font-size: 10px;
+  color: #4a5568;
+  text-align: center;
+  padding: 8px;
+}
+
+/* Tooltip */
+.tooltip {
+  position: fixed;
+  padding: 8px 12px;
+  background: rgba(12,14,19,0.96);
+  border: 1px solid #1e2430;
+  border-radius: 6px;
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 1000;
+  max-width: 340px;
+  display: none;
+  backdrop-filter: blur(8px);
+}
+.tt-path {
+  font-weight: 600;
+  color: #00d97e;
+  margin-bottom: 4px;
+  word-break: break-all;
+  font-size: 10.5px;
+}
+.tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 1px 0;
+  font-size: 10.5px;
+}
+.tt-k { color: #4a5568; }
+.tt-v { color: #e2e8f0; font-weight: 500; }
+
+/* ── Footer ── */
+.footer {
+  grid-column: 1 / 2;
+  padding: 4px 16px;
+  background: #11131a;
+  border-top: 1px solid #1e2430;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 10px;
+  color: #2d3748;
+  flex-shrink: 0;
+}
+.legend-row {
+  display: flex;
+  gap: 10px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #4a5568;
+}
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.footer .brand { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="logo">
+    <span class="delta">&delta;</span>
+    <span class="title">Landmine Map</span>
+    <span class="repo">$repo_name</span>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi blue">
+      <span class="kpi-val">$n_modifications</span>
+      <span class="kpi-label">Scans</span>
+    </div>
+    <div class="kpi amber">
+      <span class="kpi-val">$files_at_risk</span>
+      <span class="kpi-label">At Risk</span>
+    </div>
+    <div class="kpi red">
+      <span class="kpi-val">$high_risk_files</span>
+      <span class="kpi-label">High Risk</span>
+    </div>
+    <div class="kpi amber">
+      <span class="kpi-val">$total_findings</span>
+      <span class="kpi-label">Findings</span>
+    </div>
+    <div class="kpi green">
+      <span class="kpi-val">$hit_rate</span>
+      <span class="kpi-label">Hit Rate</span>
+    </div>
+  </div>
+</div>
+
+<!-- Center: treemap + pattern bar -->
+<div class="center">
+  <div id="treemap-wrap"></div>
+  <div class="pattern-bar">
+    <div class="pb-title">Patterns</div>
+    <div class="pb-chart" id="pattern-chart"></div>
+    <div class="pb-legend" id="pattern-legend"></div>
+  </div>
+</div>
+
+<!-- Right panel -->
+<div class="right-panel">
+  <div class="panel-tabs">
+    <div class="panel-tab active" data-tab="ranking">Ranking</div>
+    <div class="panel-tab" data-tab="detail">Detail</div>
+  </div>
+  <div class="panel-scroll">
+    <div class="tab-pane active" id="pane-ranking"></div>
+    <div class="tab-pane" id="pane-detail">
+      <div class="detail-pane" id="detail-content">
+        <p style="color:#4a5568;padding:20px;text-align:center;font-size:11px">Click a file to see details</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip"></div>
+
+<!-- Footer -->
+<div class="footer">
+  <div class="legend-row">
+    <div class="legend-item"><div class="legend-swatch" style="background:#1a2e1a"></div>Safe</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#2d8a2d"></div>Low</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#e6a817"></div>Med</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#e05d44"></div>High</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#cc0033"></div>Critical</div>
+  </div>
+  <span class="brand">&delta;-lint &middot; $timestamp</span>
+</div>
+
+<script>
+const data = $treemap_json;
+
+// ── Flatten tree to leaf list ──
+function flatLeaves(n) { return n.children ? n.children.flatMap(flatLeaves) : [n]; }
+const allFiles = flatLeaves(data).filter(d => d.full_path);
+allFiles.sort((a,b) => (b.risk_score||0) - (a.risk_score||0));
+const maxRisk = Math.max(...allFiles.map(d => d.risk_score||0), 0.001);
+
+function riskColor(s) {
+  if (s <= 0) return '#1a2e1a';
+  const r = s / maxRisk;
+  if (r <= 0.2) return '#2d8a2d';
+  if (r <= 0.4) return '#5a9e3e';
+  if (r <= 0.6) return '#e6a817';
+  if (r <= 0.8) return '#e05d44';
+  return '#cc0033';
+}
+function sevClass(s) {
+  const r = s / maxRisk;
+  return r > 0.6 ? 'high' : r > 0.25 ? 'medium' : 'low';
+}
+
+// ── Treemap ──
+const tmWrap = document.getElementById('treemap-wrap');
+let selectedCell = null;
+
+function renderTreemap() {
+  tmWrap.innerHTML = '';
+  const W = tmWrap.clientWidth, H = tmWrap.clientHeight;
+  if (W < 10 || H < 10) return;
+
+  const root = d3.hierarchy(data)
+    .sum(d => {
+      const risk = d.risk_score || 0;
+      return risk > 0 ? Math.max(60, Math.round(risk * 1000)) : 1;
+    })
+    .sort((a,b) => (b.value||0) - (a.value||0));
+
+  d3.treemap().size([W, H]).padding(1.5).paddingTop(15).round(true)(root);
+
+  // Group labels
+  if (root.children) root.children.forEach(g => {
+    const lbl = document.createElement('div');
+    lbl.className = 'tm-group-label';
+    lbl.style.left = g.x0 + 'px';
+    lbl.style.top = g.y0 + 'px';
+    lbl.style.width = (g.x1 - g.x0) + 'px';
+    const cat = g.data.category;
+    lbl.textContent = cat ? g.data.name + ' \u2014 ' + cat : g.data.name;
+    if (cat) lbl.title = cat + ' (' + g.data.name + ')';
+    tmWrap.appendChild(lbl);
+  });
+
+  // Leaf cells
+  const tooltip = document.getElementById('tooltip');
+  root.leaves().forEach(leaf => {
+    const d = leaf.data;
+    const w = leaf.x1 - leaf.x0, h = leaf.y1 - leaf.y0;
+    if (w < 2 || h < 2) return;
+
+    const el = document.createElement('div');
+    el.className = 'tm-cell';
+    el.dataset.path = d.full_path || d.name;
+    el.style.cssText = 'left:' + leaf.x0 + 'px;top:' + leaf.y0 + 'px;width:' + w + 'px;height:' + h + 'px;background:' + riskColor(d.risk_score||0) + ';';
+
+    if (w > 36 && h > 16) {
+      const lbl = document.createElement('div');
+      lbl.className = 'tm-label';
+      lbl.textContent = d.name;
+      el.appendChild(lbl);
+    }
+    if (w > 36 && h > 28 && (d.hit_count||0) > 0) {
+      const hits = document.createElement('div');
+      hits.className = 'tm-hits';
+      hits.textContent = (d.hit_count||0) + ' hits';
+      el.appendChild(hits);
+    }
+
+    el.addEventListener('mouseenter', e => {
+      tooltip.innerHTML = '<div class="tt-path">' + (d.full_path||d.name) + '</div>'
+        + '<div class="tt-row"><span class="tt-k">Risk</span><span class="tt-v">' + (d.risk_score||0).toFixed(3) + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">Hits</span><span class="tt-v">' + (d.hit_count||0) + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">Severity</span><span class="tt-v">' + (d.max_severity||'none') + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">Findings</span><span class="tt-v">' + (d.findings_count||0) + '</span></div>';
+      tooltip.style.display = 'block';
+    });
+    el.addEventListener('mousemove', e => {
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top = (e.clientY + 14) + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+    el.addEventListener('click', () => { selectFile(d.full_path || d.name); });
+
+    tmWrap.appendChild(el);
+  });
+}
+setTimeout(renderTreemap, 0);
+window.addEventListener('resize', () => { renderTreemap(); });
+
+// ── Pattern distribution chart ──
+try { (function buildPatternChart() {
+  const patternColors = {
+    '\u2460': '#4dabf7', '\u2461': '#ffa502', '\u2462': '#ff6b81',
+    '\u2463': '#00d97e', '\u2464': '#a855f7', '\u2465': '#f472b6',
+  };
+  const patternNames = {
+    '\u2460': 'Asymmetric Defaults', '\u2461': 'Semantic Mismatch',
+    '\u2462': 'Spec Divergence', '\u2463': 'Guard Non-Propagation',
+    '\u2464': 'Paired-Setting Override', '\u2465': 'Lifecycle Ordering',
+  };
+  const counts = {};
+  allFiles.forEach(d => {
+    (d.patterns || []).forEach(p => {
+      const key = p.trim().charAt(0);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+  });
+
+  const chart = document.getElementById('pattern-chart');
+  const legend = document.getElementById('pattern-legend');
+  const entries = Object.entries(counts).sort((a,b) => b[1] - a[1]);
+  const total = entries.reduce((s,e) => s + e[1], 0) || 1;
+
+  if (entries.length === 0) {
+    chart.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;color:#2d3748;font-size:10px">No pattern data</div>';
+    return;
+  }
+
+  entries.forEach(([key, count]) => {
+    const seg = document.createElement('div');
+    seg.className = 'pb-segment';
+    seg.style.flex = count;
+    seg.style.background = patternColors[key] || '#4a5568';
+    seg.title = (patternNames[key] || key) + ': ' + count;
+    if (count / total > 0.08) {
+      const lbl = document.createElement('div');
+      lbl.className = 'pb-seg-label';
+      lbl.textContent = key + ' ' + count;
+      seg.appendChild(lbl);
+    }
+    chart.appendChild(seg);
+  });
+
+  entries.slice(0, 6).forEach(([key, count]) => {
+    const item = document.createElement('span');
+    item.innerHTML = '<span class="pb-legend-dot" style="background:' + (patternColors[key]||'#4a5568') + '"></span>'
+      + (patternNames[key] || key);
+    legend.appendChild(item);
+  });
+})(); } catch(e) { console.warn('Pattern chart error:', e); }
+
+// ── Ranking ──
+const paneRanking = document.getElementById('pane-ranking');
+const paneDetail = document.getElementById('pane-detail');
+const detailContent = document.getElementById('detail-content');
+
+// Category lookup: walk data to build path->category map
+const _catMap = {};
+(function buildCatMap(node, parentCat) {
+  const cat = node.category || parentCat || '';
+  if (node.children) {
+    node.children.forEach(c => buildCatMap(c, node.category || parentCat));
+  } else if (node.full_path) {
+    _catMap[node.full_path] = cat;
+  }
+})(data, '');
+
+function fileCategory(path) { return _catMap[path] || ''; }
+
+function buildRanking() {
+  const ranked = allFiles.filter(d => (d.risk_score||0) > 0);
+  if (!ranked.length) {
+    paneRanking.innerHTML = '<div style="padding:20px;color:#4a5568;text-align:center;font-size:11px">No files at risk</div>';
+    return;
+  }
+  let html = '';
+  ranked.forEach((d, i) => {
+    const score = d.risk_score || 0;
+    const pct = Math.round((score / maxRisk) * 100);
+    const sc = sevClass(score);
+    const barColor = sc === 'high' ? '#ff4757' : sc === 'medium' ? '#ffa502' : '#2d8a2d';
+    const fp = d.full_path || d.name;
+    const lastSlash = fp.lastIndexOf('/');
+    const dir = lastSlash >= 0 ? fp.substring(0, lastSlash + 1) : '';
+    const file = lastSlash >= 0 ? fp.substring(lastSlash + 1) : fp;
+    const cat = fileCategory(fp);
+
+    html += '<div class="rank-item" data-path="' + fp + '">'
+      + '<div class="rank-num">' + (i+1) + '</div>'
+      + '<div class="rank-info">'
+      + '<div class="rank-path" title="' + fp + '"><span class="dir">' + dir + '</span>' + file + '</div>'
+      + '<div class="rank-meta">'
+      + '<span class="rank-badge ' + sc + '">' + score.toFixed(3) + '</span>'
+      + (cat ? '<span class="rank-cat">' + cat + '</span>' : '')
+      + '<span>' + (d.hit_count||0) + ' hits</span>'
+      + '</div></div>'
+      + '<div class="rank-bar-wrap"><div class="rank-bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
+      + '</div>';
+  });
+  paneRanking.innerHTML = html;
+  // Attach click handlers via delegation
+  paneRanking.querySelectorAll('.rank-item').forEach(el => {
+    el.addEventListener('click', () => selectFile(el.dataset.path));
+  });
+}
+buildRanking();
+
+// ── Tab switching ──
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const name = tab.dataset.tab;
+    paneRanking.classList.toggle('active', name === 'ranking');
+    paneDetail.classList.toggle('active', name === 'detail');
+  });
+});
+
+function switchToDetail() {
+  document.querySelectorAll('.panel-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === 'detail');
+  });
+  paneRanking.classList.remove('active');
+  paneDetail.classList.add('active');
+}
+
+// ── Select file (treemap click or ranking click) ──
+function selectFile(path) {
+  // Highlight treemap cell
+  if (selectedCell) selectedCell.classList.remove('selected');
+  const cell = tmWrap.querySelector('.tm-cell[data-path="' + CSS.escape(path) + '"]');
+  if (cell) { cell.classList.add('selected'); selectedCell = cell; }
+
+  // Highlight ranking
+  document.querySelectorAll('.rank-item').forEach(el => {
+    el.classList.toggle('selected', el.dataset.path === path);
+  });
+
+  // Show detail
+  const fileData = allFiles.find(d => (d.full_path || d.name) === path);
+  if (fileData) showDetail(fileData);
+}
+window.selectFile = selectFile;
+
+// ── Detail view ──
+function showDetail(d) {
+  switchToDetail();
+  let html = '<button class="detail-back" id="detail-back-btn">Back</button>';
+  const fp = d.full_path || d.name;
+  const detailCat = fileCategory(fp);
+  html += '<div class="detail-path">' + fp + '</div>';
+  if (detailCat) html += '<div style="margin-bottom:8px"><span class="rank-cat" style="font-size:10px;padding:2px 8px">' + detailCat + '</span></div>';
+  html += '<div class="detail-stats">';
+  html += '<div class="detail-chip">Risk <b>' + (d.risk_score||0).toFixed(3) + '</b></div>';
+  html += '<div class="detail-chip">Hits <b>' + (d.hit_count||0) + '</b></div>';
+  html += '<div class="detail-chip">Severity <b>' + (d.max_severity||'none') + '</b></div>';
+  html += '<div class="detail-chip">Findings <b>' + (d.findings_count||0) + '</b></div>';
+  html += '</div>';
+
+  if (d.confirmed_bugs && d.confirmed_bugs.length > 0) {
+    d.confirmed_bugs.forEach(b => {
+      html += '<div class="bug-badge">Confirmed: ' + (b.issue||'') + ' (' + (b.repo||'') + ')</div> ';
+    });
+  }
+
+  if (d.patterns && d.patterns.length > 0) {
+    const uniq = [...new Set(d.patterns)];
+    html += '<div class="detail-section-title">Detected Patterns</div>';
+    html += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">';
+    uniq.forEach(p => {
+      html += '<span style="font-size:10px;padding:2px 6px;background:#161922;border:1px solid #1e2430;border-radius:3px;color:#ffa502">' + p + '</span>';
+    });
+    html += '</div>';
+  }
+
+  const findings = d.findings_sample || [];
+  if (findings.length > 0) {
+    html += '<div class="detail-section-title">Findings</div>';
+    findings.forEach(f => {
+      const sev = f.severity || 'low';
+      html += '<div class="finding-card">';
+      html += '<div class="fc-header">';
+      html += '<span class="fc-pattern">' + (f.pattern || 'Unknown') + '</span>';
+      html += '<span class="fc-sev ' + sev + '">' + sev + '</span>';
+      if (f.bug_class) html += '<span class="fc-bug-class">' + f.bug_class + '</span>';
+      html += '</div>';
+
+      // Contradiction / description
+      const desc = f.contradiction || f.description || f.summary || '';
+      if (desc) html += '<div class="fc-desc">' + desc + '</div>';
+
+      // User impact
+      const impact = f.user_impact || '';
+      if (impact) {
+        html += '<div class="fc-impact"><div class="fc-impact-label">User Impact</div>' + impact + '</div>';
+      }
+
+      // Location details
+      const loc = f.location || {};
+      if (loc.file_a || loc.file_b) {
+        html += '<div class="fc-locations">';
+        if (loc.file_a) html += '<div><code>' + loc.file_a + '</code> ' + (loc.detail_a || '') + '</div>';
+        if (loc.file_b) html += '<div><code>' + loc.file_b + '</code> ' + (loc.detail_b || '') + '</div>';
+        html += '</div>';
+      }
+
+      // Trigger
+      if (f.modification_desc) {
+        html += '<div class="fc-trigger">Triggered by: ' + f.modification_desc + '</div>';
+      }
+      html += '</div>';
+    });
+
+    if ((d.findings_count||0) > findings.length) {
+      html += '<div class="more-findings">Showing ' + findings.length + ' of ' + d.findings_count + ' findings</div>';
+    }
+  } else {
+    html += '<p style="color:#4a5568;margin-top:16px;font-size:11px">No findings for this file.</p>';
+  }
+
+  detailContent.innerHTML = html;
+  const backBtn = document.getElementById('detail-back-btn');
+  if (backBtn) backBtn.addEventListener('click', () => {
+    document.querySelector('.panel-tab[data-tab="ranking"]').click();
+  });
+}
+</script>
+</body>
+</html>

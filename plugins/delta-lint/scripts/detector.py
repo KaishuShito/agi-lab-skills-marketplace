@@ -35,10 +35,23 @@ from retrieval import ModuleContext
 PROMPT_DIR = Path(__file__).parent / "prompts"
 
 
-def load_system_prompt() -> str:
+LANG_INSTRUCTIONS = {
+    "en": "",  # default: no extra instruction, LLM writes English naturally
+    "ja": (
+        "## Language\n\n"
+        "Write the `contradiction`, `impact`, and `internal_evidence` fields in **Japanese**. "
+        "Keep `pattern`, `severity`, and `location` fields in English. "
+        "Example: `\"impact\": \"デフォルト設定でLoRAファインチューニングを実行するとAttributeErrorでクラッシュする\"`"
+    ),
+}
+
+
+def load_system_prompt(lang: str = "en") -> str:
     """Load the detection system prompt from prompts/detect.md."""
     prompt_path = PROMPT_DIR / "detect.md"
-    return prompt_path.read_text(encoding="utf-8")
+    prompt = prompt_path.read_text(encoding="utf-8")
+    lang_instruction = LANG_INSTRUCTIONS.get(lang, "")
+    return prompt.replace("{lang_instruction}", lang_instruction)
 
 
 def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
@@ -60,7 +73,8 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
 
 def detect(context: ModuleContext, repo_name: str = "",
            model: str = "claude-sonnet-4-20250514",
-           backend: str = "cli") -> list[dict]:
+           backend: str = "cli",
+           lang: str = "en") -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
@@ -68,11 +82,12 @@ def detect(context: ModuleContext, repo_name: str = "",
         repo_name: Optional repository name for context
         model: Model identifier
         backend: "cli" (claude -p, $0, default), "api" (SDK/HTTP, pay-per-use)
+        lang: Output language for descriptive fields ("en" or "ja")
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
     """
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt(lang=lang)
     user_prompt = build_user_prompt(context, repo_name)
 
     if backend == "cli" and not _cli_available():

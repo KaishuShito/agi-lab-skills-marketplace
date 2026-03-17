@@ -38,11 +38,13 @@ from pathlib import Path
 # Ensure imports work when running from any directory
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Load .env from candidate locations
+# Load .env from candidate locations (plugin root or repo root; no hardcoded absolute path)
 _env_candidates = [
-    Path(__file__).parent.parent / ".env",  # original location (技術的負債定量化PJT/.env)
-    Path("/Users/sunagawa/Project/ugentropy-papers/技術的負債定量化PJT/.env"),  # absolute fallback
+    Path(__file__).parent.parent / ".env",
+    Path.cwd() / ".env",
 ]
+if os.environ.get("DELTA_LINT_ENV"):
+    _env_candidates.insert(0, Path(os.environ["DELTA_LINT_ENV"]))
 for _env_path in _env_candidates:
     if _env_path.exists():
         for line in _env_path.read_text().splitlines():
@@ -67,6 +69,40 @@ from suppress import (
     resolve_why_type,
     _extract_line_number,
 )
+from findings import cmd_findings
+
+
+# ---------------------------------------------------------------------------
+# Config file loading
+# ---------------------------------------------------------------------------
+
+def _load_config(repo_path: str = ".") -> dict:
+    """Load .delta-lint/config.json if it exists. Returns empty dict otherwise."""
+    config_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
+    if config_path.exists():
+        try:
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _apply_config_to_parser(parser, config: dict):
+    """Override parser defaults with config values. CLI flags still win."""
+    mapping = {
+        "lang": "lang",
+        "backend": "backend",
+        "severity": "severity",
+        "model": "model",
+        "verbose": "verbose",
+        "semantic": "semantic",
+    }
+    new_defaults = {}
+    for config_key, dest in mapping.items():
+        if config_key in config:
+            new_defaults[dest] = config[config_key]
+    if new_defaults:
+        parser.set_defaults(**new_defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +204,7 @@ def cmd_scan(args):
         print(f"Running detection with {args.model}...", file=sys.stderr)
 
     findings = detect(context, repo_name=repo_name, model=args.model,
-                       backend=args.backend)
+                       backend=args.backend, lang=args.lang)
 
     if args.verbose:
         print(f"  Raw findings: {len(findings)}", file=sys.stderr)
@@ -475,6 +511,64 @@ def main():
         help="LLM backend: cli (claude -p, $0, default) or api (SDK, pay-per-use). "
              "Falls back to api if CLI not available.",
     )
+    scan_parser.add_argument(
+        "--lang", default="en",
+        choices=["en", "ja"],
+        help="Output language for finding descriptions (default: en). "
+             "Controls contradiction, impact, and internal_evidence fields.",
+    )
+
+    # --- findings subcommand ---
+    find_parser = subparsers.add_parser("findings", help="Track bugs and contradictions (JSONL)")
+    find_sub = find_parser.add_subparsers(dest="findings_command")
+
+    # findings add
+    fa = find_sub.add_parser("add", help="Record a new finding")
+    fa.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fa.add_argument("--id", default=None, help="Finding ID (auto-generated if omitted)")
+    fa.add_argument("--repo-name", default=None, help="Repository name (e.g. Codium-ai/pr-agent)")
+    fa.add_argument("--file", default=None, help="File path where finding was detected")
+    fa.add_argument("--line", type=int, default=None, help="Line number")
+    fa.add_argument("--type", default="bug", choices=["bug", "contradiction", "suspicious", "enhancement"])
+    fa.add_argument("--finding-severity", default="high", choices=["high", "medium", "low"])
+    fa.add_argument("--pattern", default="", help="Contradiction pattern (e.g. ④ Guard Non-Propagation)")
+    fa.add_argument("--title", default="", help="Short title")
+    fa.add_argument("--description", default="", help="Detailed description")
+    fa.add_argument("--status", default="found", help="Initial status")
+    fa.add_argument("--url", default="", help="GitHub Issue/PR URL")
+    fa.add_argument("--found-by", default="", help="Who/what found it")
+    fa.add_argument("--verified", action="store_true", help="Mark as verified")
+
+    # findings list
+    fl = find_sub.add_parser("list", help="List findings")
+    fl.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fl.add_argument("--repo-name", default=None, help="Filter by repo name")
+    fl.add_argument("--status", default=None, help="Filter by status")
+    fl.add_argument("--type", default=None, help="Filter by type")
+    fl.add_argument("--format", default="markdown", choices=["markdown", "json"])
+
+    # findings update
+    fu = find_sub.add_parser("update", help="Update finding status")
+    fu.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fu.add_argument("finding_id", help="Finding ID to update")
+    fu.add_argument("new_status", help="New status")
+    fu.add_argument("--repo-name", default=None, help="Repository name")
+    fu.add_argument("--url", default="", help="GitHub URL to attach")
+
+    # findings search
+    fs = find_sub.add_parser("search", help="Search findings by keyword")
+    fs.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fs.add_argument("query", help="Search keyword")
+
+    # findings stats
+    fst = find_sub.add_parser("stats", help="Show summary statistics")
+    fst.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fst.add_argument("--repo-name", default=None, help="Filter by repo name")
+    fst.add_argument("--format", default="markdown", choices=["markdown", "json"])
+
+    # findings index
+    fi = find_sub.add_parser("index", help="Regenerate _index.md")
+    fi.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
 
     # --- suppress subcommand ---
     sup_parser = subparsers.add_parser("suppress", help="Manage finding suppressions")
@@ -507,6 +601,17 @@ def main():
         help="Why type: domain/d, technical/t, preference/p (non-interactive mode)",
     )
 
+    # Load config.json and apply as parser defaults (CLI flags still win)
+    # Pre-scan argv for --repo to find the right .delta-lint/config.json
+    _repo_hint = "."
+    for i, arg in enumerate(sys.argv):
+        if arg == "--repo" and i + 1 < len(sys.argv):
+            _repo_hint = sys.argv[i + 1]
+            break
+    _config = _load_config(_repo_hint)
+    if _config:
+        _apply_config_to_parser(scan_parser, _config)
+
     args = parser.parse_args()
 
     # Default to scan when no subcommand given (backward compat)
@@ -519,6 +624,8 @@ def main():
         cmd_scan(args)
     elif args.command == "suppress":
         cmd_suppress(args)
+    elif args.command == "findings":
+        cmd_findings(args)
     else:
         parser.print_help()
         sys.exit(1)
