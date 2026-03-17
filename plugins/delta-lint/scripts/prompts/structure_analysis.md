@@ -36,5 +36,6 @@ Output ONLY a JSON object with this structure:
 - Keep descriptions concise (one sentence each)
 - List only the most important 3-5 implicit constraints per file
 - For hotspots, prioritize files that would break other modules if modified
+- IMPORTANT: "path" must be the full relative path from the repository root (e.g. "src/auth/login.ts", "wp-content/themes/mytheme/functions.php"), NOT just the filename
 
 ## Source Files

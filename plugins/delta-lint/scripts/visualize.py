@@ -165,16 +165,22 @@ def generate_heatmap(
     files_at_risk = sum(1 for r in file_risks.values() if r.risk_score > 0)
     high_risk_files = sum(1 for r in file_risks.values() if r.risk_score > 0.35)
 
+    # Check if scan is still in progress
+    n_completed = metadata.get("n_completed", len(results))
+    scan_in_progress = n_completed < n_modifications
+
     # Render template
     template = _load_template()
     html = template.safe_substitute(
         repo_name=repo_name,
         timestamp=timestamp,
         n_modifications=n_modifications,
+        n_completed=n_completed,
         total_findings=total_findings,
         hit_rate=f"{hit_mods}/{n_modifications}",
         files_at_risk=files_at_risk,
         high_risk_files=high_risk_files,
+        scan_in_progress="true" if scan_in_progress else "false",
         treemap_json=json.dumps(treemap_data, ensure_ascii=False),
     )
 

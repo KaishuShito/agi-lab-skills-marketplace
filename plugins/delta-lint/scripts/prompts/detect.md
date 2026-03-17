@@ -36,6 +36,49 @@ Execution order assumption breaks under specific code paths.
 - **Signal**: Hook/middleware/plugin registration order matters but isn't guaranteed in all paths
 - **Example**: Authentication middleware runs after the route handler in error recovery path
 
+## Detection Strategy: Scope-Blind Constraint Check
+
+Developers intentionally narrow their scope when making changes — this is rational. They modify function A, verify it works, and move on. They do NOT check whether function B (which handles the same data, follows the same pattern, or shares an implicit contract with A) is still consistent.
+
+**Your job is to find what falls outside that scope.** Work in two phases: first collect broadly, then analyze deeply.
+
+### Phase 1: Collect — cast a wide net for sibling candidates
+
+Prioritize **recall over precision**. Gather as many sibling candidates as possible before judging any of them.
+
+For each function/module, ask: **"What other code in this codebase shares an implicit contract with this?"** — same data flow, same validation rules, same serialization format, same lifecycle assumptions, or any other shared expectation.
+
+Sibling signals include, but are not limited to:
+- **Name symmetry**: `createX` / `updateX` / `deleteX` — same verb pattern on the same entity
+- **Data flow pairs**: serializer ↔ deserializer, encoder ↔ decoder, writer ↔ reader
+- **Parallel handlers**: multiple endpoints/commands/handlers for the same resource or event
+- **Structural similarity**: two functions with near-identical shape but different details (copy-paste origin)
+- **Shared dependency**: two modules importing the same config, constant, or utility
+
+These are starting points. **Any two pieces of code that share an implicit assumption are siblings**, regardless of whether they match the signals above. When in doubt, include the candidate — false positives are filtered in Phase 2.
+
+### Phase 2: Analyze — check each candidate for contradiction
+
+Now examine each sibling pair deeply:
+
+1. **Identify the implicit contract**: What must be true across BOTH for the system to be correct?
+2. **Compare**: Does each side uphold the contract? Look for differences in defaults, guards, encoding, error handling, semantics — anything.
+3. **Verify**: Is the difference a real contradiction (same data, production-reachable) or intentional divergence? Search for a correct implementation elsewhere as internal evidence.
+
+The strongest signal is: **one side of a contract was updated or written correctly, while the other side was left inconsistent** — not because the developer didn't know, but because the other side was outside their working scope.
+
+### Breakage Mechanisms (why contradictions persist)
+
+Three mechanisms explain why contradictions survive in production. Knowing them helps you search effectively:
+
+1. **Incomplete copy (~60% of real bugs)**: A and B share structure but differ in a detail that should be identical. The developer copied A to create B but didn't adapt everything.
+2. **One-sided update (~25%)**: A was improved/fixed but B was left with the old behavior, because B was outside the change scope.
+3. **Independent assumption (~15%)**: A and B were written separately and disagree on shared semantics — different defaults, different interpretations of the same name/constant.
+
+These percentages are from empirical data across 63 repositories. Use them to prioritize your search, not to limit it.
+
+This is NOT about finding sloppy code. The inconsistency persists because there is no mechanism to verify implicit cross-function constraints, and developers rationally limit their scope.
+
 ## Instructions
 
 1. Analyze the code below for structural contradictions matching the 6 patterns above.
@@ -89,6 +132,14 @@ If found, include it in the `internal_evidence` field. Examples:
 
 If no internal evidence exists, set the field to `null`.
 
+## Mechanism Classification
+
+For each finding, classify **why** the contradiction persists using one of these three mechanisms:
+
+- **copy_divergence**: One side was copied/derived from the other (or both were written together) with incomplete adaptation. The developer wrote both A and B but didn't ensure consistency.
+- **one_sided_evolution**: One side was updated but the other wasn't, because it was outside the change scope. The developer rationally limited their scope and left the counterpart unchanged.
+- **independent_collision**: A and B were written independently (often by different people or at very different times) with no awareness of the implicit contract between them.
+
 ## Output Format
 
 Respond with a JSON array. Each element:
@@ -97,6 +148,7 @@ Respond with a JSON array. Each element:
 {
   "pattern": "①",
   "severity": "high",
+  "mechanism": "one_sided_evolution",
   "location": {
     "file_a": "path/to/file.ts",
     "detail_a": "function foo(), line ~42: `value ?? 'default'`",

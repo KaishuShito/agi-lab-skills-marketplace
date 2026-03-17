@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>&delta;-lint Landmine Map: $repo_name</title>
+<script>
+  const SCAN_IN_PROGRESS = $scan_in_progress;
+  if (SCAN_IN_PROGRESS) {
+    // Auto-reload every 10 seconds while scan is running
+    setTimeout(() => location.reload(), 10000);
+  }
+</script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -507,6 +514,28 @@ body {
   border-radius: 2px;
 }
 .footer .brand { margin-left: auto; }
+
+/* ── Scan progress indicator ── */
+.scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #4dabf7;
+  margin-left: 12px;
+}
+.scan-status.done { color: #00d97e; }
+.scan-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4dabf7;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
 </style>
 </head>
 <body>
@@ -518,9 +547,10 @@ body {
     <span class="title">Landmine Map</span>
     <span class="repo">$repo_name</span>
   </div>
+  <div class="scan-status" id="scan-status"></div>
   <div class="kpi-row">
     <div class="kpi blue">
-      <span class="kpi-val">$n_modifications</span>
+      <span class="kpi-val">$n_completed<span style="font-size:11px;color:#4a5568">/$n_modifications</span></span>
       <span class="kpi-label">Scans</span>
     </div>
     <div class="kpi amber">
@@ -910,6 +940,17 @@ function showDetail(d) {
     document.querySelector('.panel-tab[data-tab="ranking"]').click();
   });
 }
+
+// ── Scan progress indicator ──
+(function() {
+  const el = document.getElementById('scan-status');
+  if (SCAN_IN_PROGRESS) {
+    el.innerHTML = '<div class="scan-pulse"></div>Scanning… auto-refreshing every 10s';
+  } else {
+    el.classList.add('done');
+    el.textContent = '✓ Scan complete';
+  }
+})();
 </script>
 </body>
 </html>

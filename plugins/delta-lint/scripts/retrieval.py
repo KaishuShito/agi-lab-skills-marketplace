@@ -59,16 +59,30 @@ class ModuleContext:
 # Git diff → changed files
 # ---------------------------------------------------------------------------
 
+def _is_git_repo(path: str) -> bool:
+    """Check if path is inside a git repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True, cwd=path, timeout=5,
+    )
+    return result.returncode == 0
+
+
 def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
     """Get list of changed files from git diff.
 
+    If not a git repo, returns empty list (caller should use --files instead).
+
     Args:
-        repo_path: Path to the git repository root
+        repo_path: Path to the repository root
         diff_target: Git ref to diff against (default: HEAD for staged+unstaged)
 
     Returns:
         List of relative file paths that were changed
     """
+    if not _is_git_repo(repo_path):
+        return []
+
     # Staged changes
     staged = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],

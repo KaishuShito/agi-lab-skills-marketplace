@@ -73,6 +73,138 @@ from findings import cmd_findings
 
 
 # ---------------------------------------------------------------------------
+# Environment pre-check — auto-install & guided setup
+# ---------------------------------------------------------------------------
+
+def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
+    """Check all external dependencies and attempt auto-install if missing.
+
+    Never exits — always finds a way to continue with degraded functionality.
+    Returns a dict with resolved settings:
+      {"backend": "cli"|"api", "warnings": [...], "degraded": bool}
+    """
+    import shutil
+    import subprocess as _sp
+
+    warnings: list[str] = []
+    resolved_backend = backend
+    degraded = False
+
+    # --- git (critical — but even without it, --files mode can work) ---
+    if not shutil.which("git"):
+        warnings.append(
+            "git not found. Diff-based scanning disabled. "
+            "Use --files to specify files manually. "
+            "Install: https://git-scm.com/downloads  "
+            "macOS: xcode-select --install  "
+            "Ubuntu: sudo apt install git"
+        )
+        degraded = True
+
+    # --- claude CLI (needed for backend=cli and semantic search) ---
+    claude_available = bool(shutil.which("claude"))
+    if not claude_available:
+        # Attempt auto-install via npm
+        if shutil.which("npm"):
+            print("claude CLI not found. Attempting install...", file=sys.stderr)
+            try:
+                r = _sp.run(
+                    ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if r.returncode == 0 and shutil.which("claude"):
+                    claude_available = True
+                    print("  ✓ claude CLI installed.", file=sys.stderr)
+            except (_sp.TimeoutExpired, OSError):
+                pass
+
+        if not claude_available:
+            warnings.append(
+                "claude CLI not available. "
+                "Install: npm install -g @anthropic-ai/claude-code"
+            )
+            resolved_backend = "api"
+
+    # --- API key (needed for backend=api, or as fallback) ---
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
+    if not claude_available and not api_key:
+        warnings.append(
+            "No LLM backend available (no claude CLI, no API key). "
+            "Set ANTHROPIC_API_KEY or install claude CLI to enable scanning. "
+            "Continuing in dry-run mode."
+        )
+        degraded = True
+
+    # --- anthropic SDK (optional, improves api backend reliability) ---
+    if resolved_backend == "api":
+        try:
+            import anthropic as _  # noqa: F401
+        except ImportError:
+            try:
+                print("anthropic SDK not found. Attempting install...", file=sys.stderr)
+                r = _sp.run(
+                    [sys.executable, "-m", "pip", "install", "anthropic"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if r.returncode == 0:
+                    print("  ✓ anthropic SDK installed.", file=sys.stderr)
+                else:
+                    warnings.append(
+                        "anthropic SDK not installed. Using raw HTTP fallback."
+                    )
+            except (_sp.TimeoutExpired, OSError):
+                warnings.append("anthropic SDK install failed. Using raw HTTP fallback.")
+
+    # --- PyYAML (optional, fallback to JSON) ---
+    try:
+        import yaml as _  # noqa: F401
+    except ImportError:
+        try:
+            r = _sp.run(
+                [sys.executable, "-m", "pip", "install", "pyyaml"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode == 0 and verbose:
+                print("  ✓ PyYAML installed.", file=sys.stderr)
+        except (_sp.TimeoutExpired, OSError):
+            pass  # JSON fallback is fine
+
+    # --- Default branch detection ---
+    try:
+        r = _sp.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.getcwd(),
+        )
+        if r.returncode == 0:
+            default_branch = r.stdout.strip().replace("refs/remotes/origin/", "")
+            if verbose:
+                print(f"  Default branch: {default_branch}", file=sys.stderr)
+    except (_sp.TimeoutExpired, OSError):
+        pass  # HEAD fallback works
+
+    # --- Shallow clone warning ---
+    try:
+        r = _sp.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.stdout.strip() == "true":
+            warnings.append(
+                "Shallow clone detected — git history may be incomplete. "
+                "Consider: git fetch --unshallow"
+            )
+    except (_sp.TimeoutExpired, OSError):
+        pass
+
+    # --- Print warnings ---
+    for w in warnings:
+        print(f"  ⚠ {w}", file=sys.stderr)
+
+    return {"backend": resolved_backend, "warnings": warnings, "degraded": degraded}
+
+
+# ---------------------------------------------------------------------------
 # Config file loading
 # ---------------------------------------------------------------------------
 
@@ -133,6 +265,15 @@ def _load_scan_log(log_path: Path) -> dict | None:
 
 def cmd_scan(args):
     """Run structural contradiction scan."""
+    # Step 0: Environment pre-check (auto-install missing deps, never exits)
+    env = _check_environment(
+        backend=getattr(args, "backend", "cli"),
+        verbose=getattr(args, "verbose", False),
+    )
+    # Apply resolved backend (may have changed if claude CLI unavailable)
+    if hasattr(args, "backend"):
+        args.backend = env["backend"]
+
     repo_path = str(Path(args.repo).resolve())
     repo_name = Path(repo_path).name
 

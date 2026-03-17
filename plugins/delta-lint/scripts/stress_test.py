@@ -15,6 +15,7 @@ All LLM calls use claude -p (subscription CLI) for $0 cost.
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -38,6 +39,57 @@ from detector import detect
 PROMPT_DIR = Path(__file__).parent / "prompts"
 HEAD_LINES = 50  # Lines to read from each file for structural analysis
 MAX_FILES_FOR_STRUCTURE = 80  # Cap files sent to structure analysis
+
+
+def _is_git_repo(path: str) -> bool:
+    """Check if path is inside a git repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True, cwd=path, timeout=5,
+    )
+    return result.returncode == 0
+
+
+# Directories to skip when walking filesystem (no .gitignore available)
+_WALK_SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
+    ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    "dist", "build", ".next", ".nuxt", ".output",
+    "vendor", "target", "out", ".gradle", ".idea", ".vscode",
+    "coverage", ".nyc_output", ".turbo", ".cache",
+}
+
+
+def _list_source_files(repo_path: str, verbose: bool = False) -> list[str]:
+    """List source files — git ls-files if available, else filesystem walk.
+
+    Returns relative paths from repo_path.
+    """
+    if _is_git_repo(repo_path):
+        result = subprocess.run(
+            ["git", "ls-files"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        files = filter_source_files(result.stdout.strip().split("\n"))
+        if files:
+            return files
+
+    # Fallback: filesystem walk (no .gitignore support)
+    if verbose:
+        print("  [warn] git not available — using filesystem walk (精度が下がります)", file=sys.stderr)
+    repo = Path(repo_path)
+    found = []
+    for root, dirs, filenames in os.walk(repo_path):
+        # Prune skipped directories in-place
+        dirs[:] = [d for d in dirs if d not in _WALK_SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            full = Path(root) / fname
+            try:
+                rel = str(full.relative_to(repo))
+                found.append(rel)
+            except ValueError:
+                pass
+    return filter_source_files(found)
 
 
 def _sample_across_dirs(files: list[str], max_count: int) -> list[str]:
@@ -90,12 +142,8 @@ def analyze_structure(repo_path: str, verbose: bool = False) -> dict:
 
     repo = Path(repo_path)
 
-    # Get source files via git ls-files
-    result = subprocess.run(
-        ["git", "ls-files"],
-        capture_output=True, text=True, cwd=repo_path, timeout=10,
-    )
-    all_files = filter_source_files(result.stdout.strip().split("\n"))
+    # Get source files — prefer git ls-files, fallback to filesystem walk
+    all_files = _list_source_files(repo_path, verbose=verbose)
 
     if verbose:
         print(f"  Found {len(all_files)} source files", file=sys.stderr)
@@ -340,12 +388,14 @@ def generate_modifications(
     if verbose:
         print(f"[step 1] Generating {n} virtual modifications...", file=sys.stderr)
 
-    # Get recent git log
-    result = subprocess.run(
-        ["git", "log", "--oneline", "-50"],
-        capture_output=True, text=True, cwd=repo_path, timeout=10,
-    )
-    git_log = result.stdout.strip()
+    # Get recent git log (optional — empty if not a git repo)
+    git_log = ""
+    if _is_git_repo(repo_path):
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-50"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        git_log = result.stdout.strip()
 
     # Load prompt template
     prompt_template = (PROMPT_DIR / "generate_modifications.md").read_text(encoding="utf-8")
@@ -713,7 +763,7 @@ def run_stress_test(
     verbose: bool = False,
     output_dir: str | None = None,
     parallel: int = 1,
-    visualize: bool = False,
+    visualize: bool = True,
     lang: str = "en",
 ) -> list[dict]:
     """Main entry point — autonomous adaptive stress-test.
@@ -730,6 +780,17 @@ def run_stress_test(
         output_dir = str(Path(repo_path) / ".delta-lint" / "stress-test")
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    # Auto-generate .gitignore in .delta-lint/ (self-contained, no root .gitignore edit)
+    delta_lint_dir = out.parent  # .delta-lint/
+    gitignore_path = delta_lint_dir / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(
+            "# delta-lint generated data (ignored by default)\n"
+            "# To share landmine map with team, remove lines below and commit\n"
+            "*\n"
+            "!.gitignore\n"
+        )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -866,7 +927,8 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", "-v", action="store_true", help="Print progress to stderr")
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--parallel", type=int, default=1, help="Concurrent scans (default: 1, recommended max: 10)")
-    parser.add_argument("--visualize", action="store_true", help="Generate HTML heatmap after scan")
+    parser.add_argument("--visualize", action="store_true", default=True, help="Generate HTML heatmap after scan (default: on)")
+    parser.add_argument("--no-visualize", action="store_true", help="Disable HTML heatmap generation")
     parser.add_argument("--lang", default="en", choices=["en", "ja"], help="Output language for findings (default: en)")
     parser.add_argument("--structure-only", action="store_true", help="Run only structure analysis (Step 0), then exit")
 
@@ -897,7 +959,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         output_dir=args.output_dir,
         parallel=args.parallel,
-        visualize=args.visualize,
+        visualize=args.visualize and not args.no_visualize,
         lang=args.lang,
     )
 
