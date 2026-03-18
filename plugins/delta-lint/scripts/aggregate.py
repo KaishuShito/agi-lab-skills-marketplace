@@ -9,8 +9,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
-SEVERITY_WEIGHT = {"high": 1.0, "medium": 0.6, "low": 0.3}
+from scoring import DEFAULT_SEVERITY_WEIGHT as SEVERITY_WEIGHT
 
 
 @dataclass

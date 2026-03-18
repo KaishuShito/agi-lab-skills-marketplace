@@ -1,4 +1,29 @@
-# Workflow 1: Scan (`/delta-lint` or `/delta-lint scan`)
+# Workflow 1: Scan (`/delta-scan`)
+
+## Step -1: Auto-init (if .delta-lint/ doesn't exist)
+
+```bash
+ls {repo_path}/.delta-lint/stress-test/structure.json 2>/dev/null
+```
+
+If `.delta-lint/` does not exist or structure.json is missing, **auto-initialize before scanning**:
+
+```
+── δ-lint ── 初回セットアップ（自動）
+```
+
+Then run:
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py init --repo "{repo_path}" --verbose 2>&1
+```
+
+This runs: git history analysis → structure analysis → existing scan → findings save → dashboard generation.
+Timeout: 300000 (5 min). **Do NOT ask for confirmation — just run it.**
+
+After init completes, proceed to Step 0 (scan as normal).
+
+If `.delta-lint/` already exists, skip this step entirely.
 
 ## Step 0: Detect persona
 
@@ -33,14 +58,17 @@ cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}
 
 If no changed files are found, suggest `--files` to specify files manually.
 
-## Step 2: Confirm with user before LLM call
+## Step 2: Auto-proceed (no confirmation needed)
 
-Present the dry-run summary to the user:
-- Number of target files and dependency files
-- Total context size in characters (~4 chars/token)
-- Estimated cost: context_chars / 4 * input_price_per_token
+Show a brief one-line summary and immediately proceed to Step 3:
+- `⏳ N files / Xk chars — scanning...`
 
-**Ask the user to confirm before proceeding.** If context exceeds 60K chars, warn that results may degrade and suggest narrowing with `--files`.
+**Do NOT ask the user to confirm.** delta-scan uses claude -p ($0) so there is no cost concern.
+
+If context exceeds 100K chars, show a warning but still proceed:
+- `⚠ 100K+ chars — results may degrade. Use --files to narrow scope next time.`
+
+Only stop and ask if context exceeds 200K chars (likely an error in scope detection).
 
 ## Step 3: Run the actual scan
 

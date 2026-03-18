@@ -157,6 +157,48 @@ def format_markdown(findings: list[dict], filtered_count: int = 0,
     return "\n".join(lines)
 
 
+def filter_diff_only(findings: list[dict], changed_files: list[str]) -> list[dict]:
+    """Keep only findings where at least one location file is in the diff.
+
+    Used by --diff-only to focus on findings directly related to current changes.
+    """
+    if not changed_files:
+        return findings
+
+    # Normalize for flexible matching
+    changed_set = set()
+    for f in changed_files:
+        changed_set.add(f)
+        if f.startswith("./"):
+            changed_set.add(f[2:])
+        else:
+            changed_set.add("./" + f)
+
+    result = []
+    for f in findings:
+        if f.get("parse_error"):
+            result.append(f)
+            continue
+        loc = f.get("location", {})
+        file_a = loc.get("file_a", "")
+        file_b = loc.get("file_b", "")
+        # Keep if either file is in the diff
+        if _path_in_set(file_a, changed_set) or _path_in_set(file_b, changed_set):
+            result.append(f)
+    return result
+
+
+def _path_in_set(path: str, path_set: set[str]) -> bool:
+    """Check if path matches any entry in the set."""
+    if not path:
+        return False
+    if path in path_set:
+        return True
+    if path.startswith("./"):
+        return path[2:] in path_set
+    return "./" + path in path_set
+
+
 def save_log(result: FilterResult, context_meta: dict, output_dir: str) -> Path:
     """Save full log (all findings including filtered/suppressed) to a JSON file.
 

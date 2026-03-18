@@ -272,9 +272,71 @@ def format_review_comment(scan_result: dict, files: list[str],
         return "\n".join(lines)
 
     severity_icon = {"high": "🔴", "medium": "🟡", "low": "⚪"}
+
+    # --- Summary table (landmine map mini) ---
+    high_count = sum(1 for f in findings if f.get("severity", "").lower() == "high")
+    med_count = sum(1 for f in findings if f.get("severity", "").lower() == "medium")
+    low_count = sum(1 for f in findings if f.get("severity", "").lower() == "low")
+
     lines.append(f"**{len(findings)} contradiction(s)** found in {len(files)} file(s)."
                  f" Mode: `{mode}`\n")
 
+    # KPI bar
+    lines.append(f"> 🔴 High: **{high_count}** &nbsp;|&nbsp; "
+                 f"🟡 Medium: **{med_count}** &nbsp;|&nbsp; "
+                 f"⚪ Low: **{low_count}**"
+                 f"{' &nbsp;|&nbsp; 🔕 Suppressed: ' + str(suppressed) if suppressed else ''}"
+                 f"\n")
+
+    # --- Affected files heatmap table ---
+    file_hits: dict[str, dict] = {}  # file -> {high: n, medium: n, low: n}
+    for f in findings:
+        if f.get("parse_error"):
+            continue
+        loc = f.get("location", {})
+        sev = f.get("severity", "medium").lower()
+        for key in ("file_a", "file_b"):
+            fp = loc.get(key, "")
+            if fp and fp != "?":
+                if fp not in file_hits:
+                    file_hits[fp] = {"high": 0, "medium": 0, "low": 0}
+                file_hits[fp][sev] = file_hits[fp].get(sev, 0) + 1
+
+    if file_hits:
+        # Sort by total hits descending, then high count
+        sorted_files = sorted(
+            file_hits.items(),
+            key=lambda x: (x[1].get("high", 0), sum(x[1].values())),
+            reverse=True,
+        )
+        lines.append("<details><summary>📊 Affected files heatmap</summary>\n")
+        lines.append("| File | 🔴 | 🟡 | ⚪ | Total |")
+        lines.append("|------|-----|-----|-----|-------|")
+        for fp, counts in sorted_files[:15]:
+            total = sum(counts.values())
+            h = counts.get("high", 0) or ""
+            m = counts.get("medium", 0) or ""
+            lo = counts.get("low", 0) or ""
+            lines.append(f"| `{fp}` | {h} | {m} | {lo} | {total} |")
+        if len(sorted_files) > 15:
+            lines.append(f"| *... +{len(sorted_files) - 15} more* | | | | |")
+        lines.append("\n</details>\n")
+
+    # --- Pattern distribution ---
+    pattern_counts: dict[str, int] = {}
+    for f in findings:
+        if not f.get("parse_error"):
+            p = f.get("pattern", "?")
+            pattern_counts[p] = pattern_counts.get(p, 0) + 1
+    if len(pattern_counts) > 1:
+        lines.append("<details><summary>🏷️ Pattern distribution</summary>\n")
+        lines.append("| Pattern | Count |")
+        lines.append("|---------|-------|")
+        for p, c in sorted(pattern_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"| {p} | {c} |")
+        lines.append("\n</details>\n")
+
+    # --- Individual findings ---
     for i, f in enumerate(findings, 1):
         if f.get("parse_error"):
             lines.append(f"### {i}. ⚠️ Parse Error")
@@ -313,7 +375,7 @@ def format_review_comment(scan_result: dict, files: list[str],
     if footer_parts:
         lines.append(f"---\n*{', '.join(footer_parts)}*\n")
 
-    lines.append("<sub>Powered by <a href=\"https://github.com/karesansui-u/agi-lab-skills-marketplace/tree/main/plugins/delta-lint\">delta-lint</a></sub>")
+    lines.append("<sub>Powered by <a href=\"https://github.com/karesansui-u/DeltaRegret\">delta-lint</a></sub>")
     return "\n".join(lines)
 
 

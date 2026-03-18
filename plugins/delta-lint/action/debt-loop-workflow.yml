@@ -1,0 +1,85 @@
+# delta-lint Debt Loop — Automated debt resolution
+#
+# Picks top N findings by priority, creates one branch + PR per finding.
+# Runs weekly (Monday 9:00 JST) or on-demand via workflow_dispatch.
+#
+# Usage:
+#   1. Copy this file to .github/workflows/debt-loop.yml
+#   2. Set ANTHROPIC_API_KEY secret (only needed if claude CLI is unavailable)
+#   3. Adjust count, model, and schedule as needed
+
+name: "delta-lint: Debt Loop"
+
+on:
+  schedule:
+    # Every Monday at 00:00 UTC (09:00 JST)
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Number of findings to process"
+        required: false
+        default: "3"
+      finding_ids:
+        description: "Comma-separated finding IDs (overrides priority sort)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run (generate fixes but don't create PRs)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  debt-loop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Install delta-lint scripts
+        run: |
+          # Clone delta-lint scripts (adjust path if using as submodule)
+          # Option A: If delta-lint is in the repo
+          # SCRIPTS_DIR=./path/to/delta-lint/scripts
+
+          # Option B: Clone from marketplace
+          git clone --depth 1 https://github.com/karesansui-u/DeltaRegret.git /tmp/delta-lint
+          SCRIPTS_DIR=/tmp/delta-lint/scripts
+          echo "SCRIPTS_DIR=$SCRIPTS_DIR" >> $GITHUB_ENV
+
+      - name: Run Debt Loop
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COUNT="${{ github.event.inputs.count || '3' }}"
+          IDS="${{ github.event.inputs.finding_ids || '' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+
+          ARGS="--repo . --count $COUNT --backend api --verbose"
+
+          if [ -n "$IDS" ]; then
+            ARGS="$ARGS --ids $IDS"
+          fi
+
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          cd $SCRIPTS_DIR
+          python debt_loop.py $ARGS

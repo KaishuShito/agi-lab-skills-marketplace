@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+$progress_meta
+<title>&delta;-lint ダッシュボード</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        surface: { DEFAULT: '#ffffff', 1: '#f7f8fa', 2: '#f0f2f5', 3: '#e3e8ee', 4: '#d8dde4' },
+        accent: { DEFAULT: '#0a7d5a', dim: 'rgba(10,125,90,0.08)' },
+        txt: { DEFAULT: '#3c4257', muted: '#697386', dim: '#a3acb9', bright: '#1a1f36' },
+        sev: { high: '#cd3d64', medium: '#c97a20', low: '#a3acb9' },
+        link: '#556cd6',
+        file: '#3a7bd5',
+        pat: '#8270db',
+        debt: '#c97a20',
+      }
+    }
+  }
+}
+</script>
+<style>
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.3} }
+.pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+.tm-cell { position:absolute; overflow:hidden; cursor:pointer; transition:filter .12s,box-shadow .12s; border-radius:2px; }
+.tm-cell:hover { filter:brightness(1.25); box-shadow:0 0 0 1px rgba(0,217,126,.5); z-index:10; }
+.tm-cell.selected { box-shadow:0 0 0 2px #00d97e,0 0 12px rgba(0,217,126,.25); z-index:20; }
+.tm-label { padding:2px 4px; font-size:10px; color:rgba(255,255,255,.95); text-shadow:0 1px 3px rgba(0,0,0,.6); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+.tm-hits { padding:0 4px; font-size:9px; color:rgba(255,255,255,.7); pointer-events:none; }
+.tm-group-label { position:absolute; font-size:10px; font-weight:600; color:#697386; padding:0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; z-index:5; }
+.pb-segment { height:100%; position:relative; transition:flex .3s; cursor:default; }
+.pb-segment:hover { filter:brightness(1.3); }
+.pb-seg-label { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:600; color:rgba(255,255,255,.9); white-space:nowrap; overflow:hidden; pointer-events:none; }
+.custom-scroll::-webkit-scrollbar { width:3px; }
+.custom-scroll::-webkit-scrollbar-thumb { background:#d8dde4; border-radius:2px; }
+.side-panel { width:0; overflow:hidden; transition:width .2s ease; }
+.side-panel.open { width:400px; }
+.side-panel-inner { width:400px; }
+/* Nav item */
+.nav-item { transition: all .15s; }
+.nav-item:hover { background: rgba(0,0,0,.03); }
+.nav-item.active { background: rgba(10,125,90,.06); border-right: 2px solid #0a7d5a; color: #0a7d5a; }
+</style>
+</head>
+<body class="bg-surface text-txt h-screen overflow-hidden flex font-['Inter',-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+
+<!-- ══ Left Sidebar ══ -->
+<aside class="w-[200px] bg-surface-1 border-r border-surface-3 flex flex-col shrink-0 h-screen">
+  <!-- Logo -->
+  <div class="flex items-baseline gap-1.5 px-4 py-4 border-b border-surface-3">
+    <span class="text-[22px] font-light text-accent">&delta;</span>
+    <span class="text-sm font-semibold text-txt-bright tracking-wide">delta-lint</span>
+  </div>
+  <!-- Nav -->
+  <nav class="flex-1 py-2">
+    <div class="nav-item active flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium" data-nav="findings">
+      <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+      検出結果 <span class="ml-auto text-[11px] bg-accent/15 text-accent rounded-full px-2 py-px font-medium" id="findings-nav-count">$total_count</span>
+    </div>
+    <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="landmine" id="nav-landmine" style="display:none;">
+      <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+      地雷マップ
+    </div>
+    <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="tradeoffs">
+      <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
+      トレードオフ <span class="ml-auto text-[11px] bg-surface-4 rounded-full px-2 py-px text-txt-muted" id="tradeoffs-nav-count">0</span>
+    </div>
+  </nav>
+  <!-- Footer info -->
+  <div class="px-4 py-3 border-t border-surface-3 text-[10px] text-txt-dim leading-relaxed">
+    <div>$repo_count リポジトリ</div>
+    <div class="mt-0.5">$generated_at</div>
+    $custom_scoring_badge
+  </div>
+</aside>
+
+<!-- ══ Main Content ══ -->
+<main class="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+
+  $progress_html
+
+  <!-- ── KPI Row ── -->
+  <div class="flex gap-2.5 px-6 py-3 flex-wrap shrink-0 border-b border-surface-3 bg-surface-1/50">
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-link">$total_count</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">シグナル総数</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">LLM が検出した矛盾候補</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-sev-high">$confirmed_bugs</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">確実バグ</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">裏取り済みの確定バグ</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-[#ffa502]">$investigating</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">要調査</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">未検証のシグナル</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-pat">$debt_count</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">技術的負債</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">バグではないが改善すべき</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-green-400">$merged_count</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">修正済み</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-accent">$scan_grade</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">スキャン深度</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">$scan_count回 / $scan_total_clustersクラスタ</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
+      <div class="text-2xl font-bold text-sky-300">$resolution_rate%</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">解決率</div>
+    </div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center" title="Chao1推定: 発見済み$total_count / 推定$coverage_estimated件 (CI: $coverage_ci_lower-$coverage_ci_upper)">
+      <div class="text-2xl font-bold" style="color:#e879f9">$coverage_pct%</div>
+      <div class="text-[11px] text-txt-muted font-semibold mt-0.5">推定カバレッジ</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">残 ~$coverage_unseen件の未発見</div>
+    </div>
+  </div>
+
+  <!-- ══ Findings Panel (default) ══ -->
+  <div class="nav-panel flex flex-col flex-1 min-h-0" id="panel-findings">
+    <div class="flex gap-2 px-6 pt-2 pb-1 flex-wrap shrink-0" id="category-filters">
+      <span class="text-txt-muted text-xs leading-6">分類:</span>
+    </div>
+    <div class="flex gap-2 px-6 pb-3 flex-wrap shrink-0" id="filters">
+      <span class="text-txt-muted text-xs leading-6">ステータス:</span>
+    </div>
+    <div class="flex gap-2 px-6 pb-3 flex-wrap shrink-0" id="repos"></div>
+    <div class="flex flex-1 min-h-0 overflow-hidden">
+      <div class="flex-1 min-w-0 flex flex-col">
+        <div class="px-6 pb-6 overflow-x-auto flex-1">
+          <table class="w-full border-collapse text-[13px]" id="findings-table">
+            <thead>
+              <tr>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="id">ID <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="category">分類 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt sorted" data-col="severity">重大度 <span class="sort-arrow ml-1 opacity-100 text-link">&#9660;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="title">内容 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="file">ファイル <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="status">ステータス <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="roi_score">解消価値 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="info_score" title="-log₂P × (1+H) × log₂(1+fan_out) / fix_cost">情報量 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+          <div class="text-center py-16 text-txt-dim text-sm hidden" id="empty">条件に一致する検出結果がありません。</div>
+        </div>
+      </div>
+      <div class="side-panel bg-surface-1 border-l border-surface-3 shrink-0" id="findings-side">
+        <div class="side-panel-inner h-full overflow-y-auto p-4 custom-scroll" id="side-inner">
+          <p class="text-txt-dim text-center text-[11px] mt-10">行をクリックして詳細を表示</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Landmine Map Panel ══ -->
+  <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-landmine">
+    <div class="grid flex-1 min-h-0 overflow-hidden" style="grid-template-columns:1fr 320px;grid-template-rows:1fr auto;" id="lm-container">
+      <div class="flex flex-col overflow-hidden min-h-0">
+        <div class="flex-1 relative overflow-hidden min-h-0" id="treemap-wrap"></div>
+        <div class="h-14 border-t border-surface-3 bg-surface-1 flex items-center px-4 gap-3 shrink-0">
+          <div class="text-[10px] uppercase tracking-wider text-txt-dim shrink-0 w-16">パターン分布</div>
+          <div class="flex-1 flex h-7 rounded overflow-hidden bg-surface-2" id="pattern-chart"></div>
+          <div class="flex gap-2.5 text-[10px] text-txt-dim shrink-0" id="pattern-legend"></div>
+        </div>
+      </div>
+      <div class="bg-surface-1 border-l border-surface-3 flex flex-col overflow-hidden" style="grid-row:1/3;grid-column:2;">
+        <div class="flex border-b border-surface-3 shrink-0">
+          <div class="lm-panel-tab flex-1 py-2.5 text-center text-[11px] font-semibold text-txt-dim cursor-pointer border-b-2 border-transparent hover:text-txt-muted transition-all active text-accent !border-accent" data-lm-tab="ranking">リスク順位</div>
+          <div class="lm-panel-tab flex-1 py-2.5 text-center text-[11px] font-semibold text-txt-dim cursor-pointer border-b-2 border-transparent hover:text-txt-muted transition-all" data-lm-tab="detail">詳細</div>
+        </div>
+        <div class="flex-1 overflow-y-auto custom-scroll">
+          <div class="lm-tab-pane active" id="lm-pane-ranking"></div>
+          <div class="lm-tab-pane hidden" id="lm-pane-detail">
+            <div class="p-3.5" id="lm-detail-content">
+              <p class="text-txt-dim text-center text-[11px] py-5">ファイルをクリックして詳細を表示</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="px-4 py-1 bg-surface-1 border-t border-surface-3 flex items-center gap-3 text-[10px] text-txt-dim shrink-0">
+      <div class="flex gap-2.5">
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm inline-block" style="background:#d1f5e4"></span>安全</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm inline-block" style="background:#6ecba0"></span>低</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm inline-block" style="background:#e8a44a"></span>中</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm inline-block" style="background:#e07050"></span>高</span>
+        <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm inline-block" style="background:#cd3d64"></span>危険</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Trade-offs Panel ══ -->
+  <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-tradeoffs">
+    <div class="flex gap-3 px-6 py-4 flex-wrap shrink-0" id="tradeoff-summary"></div>
+    <div class="flex gap-2 px-6 pb-3 flex-wrap shrink-0" id="tradeoff-filters">
+      <span class="text-txt-muted text-xs leading-6">分類:</span>
+    </div>
+    <div class="px-6 pb-6 overflow-x-auto flex-1">
+      <table class="w-full border-collapse text-[13px]" id="tradeoffs-table">
+        <thead>
+          <tr>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="id">ID</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="pattern">パターン</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="files">対象ファイル</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="why_type">分類</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="why">理由</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="author">判断者</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="approved_by">承認者</th>
+            <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3" data-tcol="date">日付</th>
+          </tr>
+        </thead>
+        <tbody id="tradeoff-tbody"></tbody>
+      </table>
+      <div class="text-center py-16 text-txt-dim text-sm hidden" id="tradeoff-empty">
+        意図的トレードオフはありません。<br>
+        <span class="text-xs mt-2 inline-block"><code class="bg-surface-2 px-2 py-0.5 rounded text-txt-muted">delta suppress &lt;finding-number&gt;</code> でsuppressすると、ここに理由が記録されます。</span>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Tooltip -->
+<div class="fixed hidden px-3 py-2 bg-white border border-surface-3 rounded-lg text-[11px] pointer-events-none z-[1000] max-w-[340px] shadow-lg" id="tooltip"></div>
+
+<script>
+const FINDINGS = $findings_json;
+const SUPPRESSIONS = $suppressions_json;
+const TREEMAP_DATA = $treemap_json;
+
+// ── Utility ──
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function mkBtn(label, active) {
+  const b = document.createElement("button");
+  b.className = "px-3 py-1 rounded-full text-xs cursor-pointer border transition-all "
+    + (active
+      ? "bg-link border-link text-white"
+      : "bg-surface-4 border-surface-3 text-txt hover:border-link");
+  b.textContent = label;
+  return b;
+}
+
+// ══════════════════════════════════════
+// Left nav switching
+// ══════════════════════════════════════
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.onclick = () => {
+    document.querySelectorAll(".nav-item").forEach(n => {
+      n.classList.remove("active","text-accent");
+      n.classList.add("text-txt-muted");
+    });
+    document.querySelectorAll(".nav-panel").forEach(p => { p.classList.add("hidden"); p.classList.remove("flex"); });
+    item.classList.add("active","text-accent");
+    item.classList.remove("text-txt-muted");
+    const panel = document.getElementById("panel-" + item.dataset.nav);
+    panel.classList.remove("hidden");
+    panel.classList.add("flex");
+    if (item.dataset.nav === "landmine" && TREEMAP_DATA) setTimeout(renderTreemap, 0);
+  };
+});
+
+document.getElementById("tradeoffs-nav-count").textContent = SUPPRESSIONS.length;
+
+// ══════════════════════════════════════
+// Landmine Map
+// ══════════════════════════════════════
+if (TREEMAP_DATA) {
+  document.getElementById("nav-landmine").style.display = "";
+
+  const allFiles = (function flatLeaves(n) { return n.children ? n.children.flatMap(flatLeaves) : [n]; })(TREEMAP_DATA).filter(d => d.full_path);
+  allFiles.sort((a,b) => (b.risk_score||0) - (a.risk_score||0));
+  const maxRisk = Math.max(...allFiles.map(d => d.risk_score||0), 0.001);
+
+  function riskColor(s) {
+    if (s <= 0) return '#d1f5e4';
+    const r = s / maxRisk;
+    if (r <= 0.2) return '#6ecba0';
+    if (r <= 0.4) return '#f0c95c';
+    if (r <= 0.6) return '#e8a44a';
+    if (r <= 0.8) return '#e07050';
+    return '#cd3d64';
+  }
+  function sevClass(s) {
+    const r = s / maxRisk;
+    return r > 0.6 ? 'high' : r > 0.25 ? 'medium' : 'low';
+  }
+
+  const _catMap = {};
+  (function buildCatMap(node, parentCat) {
+    const cat = node.category || parentCat || '';
+    if (node.children) node.children.forEach(c => buildCatMap(c, node.category || parentCat));
+    else if (node.full_path) _catMap[node.full_path] = cat;
+  })(TREEMAP_DATA, '');
+  function fileCategory(path) { return _catMap[path] || ''; }
+
+  const tmWrap = document.getElementById('treemap-wrap');
+  let selectedCell = null;
+
+  window.renderTreemap = function() {
+    tmWrap.innerHTML = '';
+    const W = tmWrap.clientWidth, H = tmWrap.clientHeight;
+    if (W < 10 || H < 10) return;
+
+    const root = d3.hierarchy(TREEMAP_DATA)
+      .sum(d => {
+        const risk = d.risk_score || 0;
+        return risk > 0 ? Math.max(60, Math.round(risk * 1000)) : 1;
+      })
+      .sort((a,b) => (b.value||0) - (a.value||0));
+
+    d3.treemap().size([W, H]).padding(1.5).paddingTop(15).round(true)(root);
+
+    if (root.children) root.children.forEach(g => {
+      const lbl = document.createElement('div');
+      lbl.className = 'tm-group-label';
+      lbl.style.left = g.x0 + 'px';
+      lbl.style.top = g.y0 + 'px';
+      lbl.style.width = (g.x1 - g.x0) + 'px';
+      const cat = g.data.category;
+      lbl.textContent = cat ? g.data.name + ' \u2014 ' + cat : g.data.name;
+      tmWrap.appendChild(lbl);
+    });
+
+    const tooltip = document.getElementById('tooltip');
+    root.leaves().forEach(leaf => {
+      const d = leaf.data;
+      const w = leaf.x1 - leaf.x0, h = leaf.y1 - leaf.y0;
+      if (w < 2 || h < 2) return;
+
+      const el = document.createElement('div');
+      el.className = 'tm-cell';
+      el.dataset.path = d.full_path || d.name;
+      el.style.cssText = 'left:'+leaf.x0+'px;top:'+leaf.y0+'px;width:'+w+'px;height:'+h+'px;background:'+riskColor(d.risk_score||0)+';';
+
+      if (w > 36 && h > 16) {
+        const lbl = document.createElement('div');
+        lbl.className = 'tm-label';
+        lbl.textContent = d.name;
+        el.appendChild(lbl);
+      }
+      if (w > 36 && h > 28 && (d.hit_count||0) > 0) {
+        const hits = document.createElement('div');
+        hits.className = 'tm-hits';
+        hits.textContent = (d.hit_count||0) + ' 件';
+        el.appendChild(hits);
+      }
+
+      el.addEventListener('mouseenter', e => {
+        tooltip.innerHTML = '<div class="font-semibold text-accent mb-1 break-all text-[10.5px]">'+(d.full_path||d.name)+'</div>'
+          +'<div class="flex justify-between gap-3.5 my-px text-[10.5px]"><span class="text-txt-muted">リスク</span><span class="text-txt-bright font-medium">'+(d.risk_score||0).toFixed(3)+'</span></div>'
+          +'<div class="flex justify-between gap-3.5 my-px text-[10.5px]"><span class="text-txt-muted">検出回数</span><span class="text-txt-bright font-medium">'+(d.hit_count||0)+'</span></div>'
+          +'<div class="flex justify-between gap-3.5 my-px text-[10.5px]"><span class="text-txt-muted">深刻度</span><span class="text-txt-bright font-medium">'+(d.max_severity||'none')+'</span></div>'
+          +'<div class="flex justify-between gap-3.5 my-px text-[10.5px]"><span class="text-txt-muted">矛盾数</span><span class="text-txt-bright font-medium">'+(d.findings_count||0)+'</span></div>';
+        tooltip.style.display = 'block';
+      });
+      el.addEventListener('mousemove', e => {
+        tooltip.style.left = (e.clientX+14)+'px';
+        tooltip.style.top = (e.clientY+14)+'px';
+      });
+      el.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+      el.addEventListener('click', () => { selectFile(d.full_path || d.name); });
+
+      tmWrap.appendChild(el);
+    });
+  };
+
+  // Pattern chart
+  try { (function() {
+    const patternColors = {'\u2460':'#4dabf7','\u2461':'#ffa502','\u2462':'#ff6b81','\u2463':'#00d97e','\u2464':'#a855f7','\u2465':'#f472b6'};
+    const patternNames = {'\u2460':'デフォルト値の非対称','\u2461':'意味の不一致','\u2462':'仕様からの逸脱','\u2463':'ガード未伝播','\u2464':'設定値の相互干渉','\u2465':'ライフサイクル順序'};
+    const counts = {};
+    allFiles.forEach(d => { (d.patterns || []).forEach(p => { const key = p.trim().charAt(0); counts[key] = (counts[key]||0)+1; }); });
+    const chart = document.getElementById('pattern-chart');
+    const legend = document.getElementById('pattern-legend');
+    const entries = Object.entries(counts).sort((a,b) => b[1]-a[1]);
+    const total = entries.reduce((s,e) => s+e[1], 0) || 1;
+    if (!entries.length) { chart.innerHTML = '<div class="flex items-center justify-center w-full text-txt-dim text-[10px]">パターンデータなし</div>'; return; }
+    entries.forEach(([key, count]) => {
+      const seg = document.createElement('div');
+      seg.className = 'pb-segment';
+      seg.style.flex = count;
+      seg.style.background = patternColors[key] || '#4a5568';
+      seg.title = (patternNames[key]||key)+': '+count;
+      if (count/total > 0.08) { const lbl = document.createElement('div'); lbl.className = 'pb-seg-label'; lbl.textContent = key+' '+count; seg.appendChild(lbl); }
+      chart.appendChild(seg);
+    });
+    entries.slice(0,6).forEach(([key]) => {
+      const item = document.createElement('span');
+      item.innerHTML = '<span class="inline-block w-2 h-2 rounded-sm mr-1 align-middle" style="background:'+(patternColors[key]||'#4a5568')+'"></span>'+(patternNames[key]||key);
+      legend.appendChild(item);
+    });
+  })(); } catch(e) { console.warn('Pattern chart error:', e); }
+
+  // Ranking
+  const paneRanking = document.getElementById('lm-pane-ranking');
+  const paneDetail = document.getElementById('lm-pane-detail');
+  const detailContent = document.getElementById('lm-detail-content');
+
+  function buildRanking() {
+    const ranked = allFiles.filter(d => (d.risk_score||0) > 0);
+    if (!ranked.length) { paneRanking.innerHTML = '<div class="p-5 text-txt-dim text-center text-[11px]">リスクのあるファイルはありません</div>'; return; }
+    let html = '';
+    ranked.forEach((d, i) => {
+      const score = d.risk_score || 0;
+      const pct = Math.round((score/maxRisk)*100);
+      const sc = sevClass(score);
+      const barColor = sc==='high'?'#cd3d64':sc==='medium'?'#c97a20':'#0a7d5a';
+      const fp = d.full_path || d.name;
+      const lastSlash = fp.lastIndexOf('/');
+      const dir = lastSlash >= 0 ? fp.substring(0,lastSlash+1) : '';
+      const file = lastSlash >= 0 ? fp.substring(lastSlash+1) : fp;
+      const cat = fileCategory(fp);
+      const numColor = i < 3 ? 'text-sev-high' : i < 6 ? 'text-[#ffa502]' : 'text-txt-dim';
+      html += '<div class="rank-item flex items-center gap-2 px-3 py-2 border-b border-white/[.025] cursor-pointer hover:bg-accent/[.04] transition-colors" data-path="'+fp+'">'
+        +'<div class="text-xs font-bold min-w-[20px] text-right '+numColor+'">'+(i+1)+'</div>'
+        +'<div class="flex-1 min-w-0">'
+        +'<div class="text-[10.5px] text-txt-muted/70 whitespace-nowrap overflow-hidden text-ellipsis" title="'+fp+'"><span class="text-txt-dim">'+dir+'</span>'+file+'</div>'
+        +'<div class="flex gap-1.5 mt-0.5 text-[9.5px] text-txt-dim">'
+        +'<span class="font-bold px-1 rounded-sm text-[9.5px] '+(sc==='high'?'bg-sev-high/10 text-sev-high':sc==='medium'?'bg-[#ffa502]/10 text-[#ffa502]':'bg-accent/10 text-accent')+'">'+score.toFixed(3)+'</span>'
+        +(cat?'<span class="text-[9px] px-1 rounded-sm bg-link/10 text-link whitespace-nowrap">'+cat+'</span>':'')
+        +'<span>'+(d.hit_count||0)+' 件</span>'
+        +'</div></div>'
+        +'<div class="w-10 h-[3px] bg-surface-2 rounded-full overflow-hidden shrink-0"><div class="h-full rounded-full" style="width:'+pct+'%;background:'+barColor+'"></div></div>'
+        +'</div>';
+    });
+    paneRanking.innerHTML = html;
+    paneRanking.querySelectorAll('.rank-item').forEach(el => {
+      el.addEventListener('click', () => selectFile(el.dataset.path));
+    });
+  }
+  buildRanking();
+
+  // Panel tab switching
+  document.querySelectorAll('.lm-panel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.lm-panel-tab').forEach(t => {
+        t.classList.remove('active','text-accent','!border-accent');
+        t.classList.add('text-txt-dim','border-transparent');
+      });
+      tab.classList.add('active','text-accent','!border-accent');
+      tab.classList.remove('text-txt-dim','border-transparent');
+      const name = tab.dataset.lmTab;
+      paneRanking.classList.toggle('hidden', name!=='ranking');
+      paneRanking.classList.toggle('active', name==='ranking');
+      paneDetail.classList.toggle('hidden', name!=='detail');
+      paneDetail.classList.toggle('active', name==='detail');
+    });
+  });
+
+  function switchToDetail() {
+    document.querySelectorAll('.lm-panel-tab').forEach(t => {
+      const isDetail = t.dataset.lmTab==='detail';
+      t.classList.toggle('active', isDetail);
+      t.classList.toggle('text-accent', isDetail);
+      t.classList.toggle('!border-accent', isDetail);
+      t.classList.toggle('text-txt-dim', !isDetail);
+      t.classList.toggle('border-transparent', !isDetail);
+    });
+    paneRanking.classList.add('hidden');
+    paneRanking.classList.remove('active');
+    paneDetail.classList.remove('hidden');
+    paneDetail.classList.add('active');
+  }
+
+  function selectFile(path) {
+    if (selectedCell) selectedCell.classList.remove('selected');
+    const cell = tmWrap.querySelector('.tm-cell[data-path="'+CSS.escape(path)+'"]');
+    if (cell) { cell.classList.add('selected'); selectedCell = cell; }
+    document.querySelectorAll('.rank-item').forEach(el => {
+      el.classList.toggle('bg-accent/[.08]', el.dataset.path===path);
+      el.classList.toggle('border-l-2', el.dataset.path===path);
+      el.classList.toggle('border-accent', el.dataset.path===path);
+    });
+    const fileData = allFiles.find(d => (d.full_path||d.name)===path);
+    if (fileData) showLmDetail(fileData);
+  }
+  window.selectFile = selectFile;
+
+  function showLmDetail(d) {
+    switchToDetail();
+    let html = '<button class="bg-transparent border border-surface-3 text-txt-dim px-2 py-1 rounded text-[10px] cursor-pointer hover:text-accent hover:border-accent/30 mb-2.5" id="lm-detail-back-btn">戻る</button>';
+    const fp = d.full_path || d.name;
+    const detailCat = fileCategory(fp);
+    html += '<div class="text-xs font-semibold text-txt-bright break-all mb-2 leading-relaxed">'+fp+'</div>';
+    if (detailCat) html += '<div class="mb-2"><span class="text-[10px] px-2 py-0.5 rounded-sm bg-link/10 text-link">'+detailCat+'</span></div>';
+    html += '<div class="flex gap-1.5 mb-2.5 flex-wrap">';
+    html += '<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted">リスク <b class="text-txt-bright">'+(d.risk_score||0).toFixed(3)+'</b></span>';
+    html += '<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted">検出回数 <b class="text-txt-bright">'+(d.hit_count||0)+'</b></span>';
+    html += '<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted">深刻度 <b class="text-txt-bright">'+(d.max_severity||'none')+'</b></span>';
+    html += '<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted">矛盾数 <b class="text-txt-bright">'+(d.findings_count||0)+'</b></span>';
+    html += '</div>';
+
+    if (d.confirmed_bugs && d.confirmed_bugs.length > 0) {
+      d.confirmed_bugs.forEach(b => { html += '<div class="inline-block px-2 py-0.5 bg-sev-high/10 text-sev-high rounded text-[10px] font-semibold mb-1.5">確認済み: '+(b.issue||'')+' ('+(b.repo||'')+')</div> '; });
+    }
+    if (d.patterns && d.patterns.length > 0) {
+      const uniq = [...new Set(d.patterns)];
+      html += '<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-3 mb-1.5 font-semibold">検出パターン</div>';
+      html += '<div class="flex gap-1 flex-wrap mb-1">';
+      uniq.forEach(p => { html += '<span class="text-[10px] px-1.5 py-0.5 bg-surface-2 border border-surface-3 rounded-sm text-[#ffa502]">'+p+'</span>'; });
+      html += '</div>';
+    }
+
+    const findings = d.findings_sample || [];
+    if (findings.length > 0) {
+      html += '<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-3 mb-1.5 font-semibold">検出された矛盾</div>';
+      findings.forEach(f => {
+        const sev = f.severity || 'low';
+        const sevBg = sev==='high'?'bg-sev-high/10 text-sev-high':sev==='medium'?'bg-[#ffa502]/10 text-[#ffa502]':'bg-accent/10 text-accent';
+        html += '<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 mb-1.5"><div class="flex items-center gap-1.5 mb-1">';
+        html += '<span class="text-[10.5px] font-semibold text-[#ffa502]">'+(f.pattern||'不明')+'</span>';
+        html += '<span class="text-[9px] font-bold px-1.5 py-px rounded-sm '+sevBg+'">'+sev+'</span>';
+        if (f.bug_class) html += '<span class="text-[9px] font-bold px-1.5 py-px rounded-sm bg-sev-high/10 text-[#ff6b81]">'+f.bug_class+'</span>';
+        html += '</div>';
+        const desc = f.contradiction || f.description || f.summary || '';
+        if (desc) html += '<div class="text-[10.5px] text-txt-dim leading-relaxed mt-1">'+desc+'</div>';
+        const impact = f.user_impact || '';
+        if (impact) html += '<div class="text-[10.5px] text-txt-muted mt-1.5 p-1.5 bg-sev-high/[.04] rounded border-l-2 border-sev-high"><div class="text-[9px] font-semibold text-[#ff6b81] uppercase tracking-wider">影響</div>'+impact+'</div>';
+        const loc = f.location || {};
+        if (loc.file_a || loc.file_b) {
+          html += '<div class="mt-1.5 text-[10px] text-txt-dim">';
+          if (loc.file_a) html += '<div><code class="bg-surface px-1 py-px rounded text-[9.5px] text-txt-muted">'+loc.file_a+'</code> '+(loc.detail_a||'')+'</div>';
+          if (loc.file_b) html += '<div><code class="bg-surface px-1 py-px rounded text-[9.5px] text-txt-muted">'+loc.file_b+'</code> '+(loc.detail_b||'')+'</div>';
+          html += '</div>';
+        }
+        if (f.modification_desc) html += '<div class="mt-1.5 pt-1.5 border-t border-surface-3 text-[10px] text-txt-dim italic">トリガー: '+f.modification_desc+'</div>';
+        html += '</div>';
+      });
+      if ((d.findings_count||0) > findings.length) {
+        html += '<div class="text-[10px] text-txt-dim text-center py-2">'+d.findings_count+' 件中 '+findings.length+' 件表示</div>';
+      }
+    } else {
+      html += '<p class="text-txt-dim mt-4 text-[11px]">このファイルに検出結果はありません。</p>';
+    }
+
+    detailContent.innerHTML = html;
+    const backBtn = document.getElementById('lm-detail-back-btn');
+    if (backBtn) backBtn.addEventListener('click', () => { document.querySelector('.lm-panel-tab[data-lm-tab="ranking"]').click(); });
+  }
+}
+
+// ══════════════════════════════════════
+// Findings Panel
+// ══════════════════════════════════════
+let activeStatuses = new Set();
+let activeRepos = new Set();
+let activeCategory = "";
+let sortCol = "severity";
+let sortAsc = false;
+const sevOrder = {high: 0, medium: 1, low: 2};
+
+// Category filter (taxonomies-aware)
+(function initCategoryFilters() {
+  const el = document.getElementById("category-filters");
+  const categories = [
+    {key: "", label: "すべて"},
+    {key: "certainty:definite", label: "確定"},
+    {key: "certainty:probable", label: "推定"},
+    {key: "certainty:uncertain", label: "要調査"},
+    {key: "source:deep_scan", label: "Deep Scan"},
+  ];
+  categories.forEach(cat => {
+    const btn = mkBtn(cat.label, cat.key === "");
+    btn.dataset.cat = cat.key;
+    btn.onclick = () => {
+      activeCategory = cat.key;
+      el.querySelectorAll("button").forEach(b => {
+        b.classList.remove("bg-link","border-link","text-white");
+        b.classList.add("bg-surface-4","border-surface-3","text-txt");
+      });
+      btn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+      btn.classList.add("bg-link","border-link","text-white");
+      render();
+    };
+    el.appendChild(btn);
+  });
+})();
+
+(function initFilters() {
+  const statuses = [...new Set(FINDINGS.map(f => f.status || "found"))].sort();
+  const el = document.getElementById("filters");
+  const allBtn = mkBtn("すべて", true);
+  allBtn.onclick = () => {
+    activeStatuses.clear();
+    el.querySelectorAll("button").forEach(b => {
+      b.classList.remove("bg-link","border-link","text-white");
+      b.classList.add("bg-surface-4","border-surface-3","text-txt");
+    });
+    allBtn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+    allBtn.classList.add("bg-link","border-link","text-white");
+    render();
+  };
+  el.appendChild(allBtn);
+  statuses.forEach(s => {
+    const btn = mkBtn(s);
+    btn.onclick = () => {
+      allBtn.classList.remove("bg-link","border-link","text-white");
+      allBtn.classList.add("bg-surface-4","border-surface-3","text-txt");
+      if (activeStatuses.has(s)) {
+        activeStatuses.delete(s);
+        btn.classList.remove("bg-link","border-link","text-white");
+        btn.classList.add("bg-surface-4","border-surface-3","text-txt");
+      } else {
+        activeStatuses.add(s);
+        btn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+        btn.classList.add("bg-link","border-link","text-white");
+      }
+      if (activeStatuses.size === 0) {
+        allBtn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+        allBtn.classList.add("bg-link","border-link","text-white");
+      }
+      render();
+    };
+    el.appendChild(btn);
+  });
+})();
+
+(function initRepos() {
+  const repos = {};
+  FINDINGS.forEach(f => { const r = f.repo || "?"; repos[r] = (repos[r]||0)+1; });
+  const el = document.getElementById("repos");
+  Object.entries(repos).sort((a,b) => b[1]-a[1]).forEach(([r, c]) => {
+    const chip = document.createElement("div");
+    chip.className = "bg-surface-2 border border-surface-3 rounded-md px-3 py-1.5 text-xs cursor-pointer hover:border-link transition-all";
+    chip.innerHTML = r + '<span class="text-link font-bold ml-1">' + c + "</span>";
+    chip.onclick = () => {
+      if (activeRepos.has(r)) { activeRepos.delete(r); chip.classList.remove("!bg-link/20","!border-link"); }
+      else { activeRepos.add(r); chip.classList.add("!bg-link/20","!border-link"); }
+      render();
+    };
+    el.appendChild(chip);
+  });
+})();
+
+document.querySelectorAll("#findings-table thead th").forEach(th => {
+  th.onclick = () => {
+    const col = th.dataset.col;
+    if (sortCol === col) sortAsc = !sortAsc;
+    else { sortCol = col; sortAsc = true; }
+    document.querySelectorAll("#findings-table thead th").forEach(t => {
+      t.classList.remove("sorted");
+      const arrow = t.querySelector(".sort-arrow");
+      if (arrow) { arrow.classList.remove("!opacity-100","!text-link"); arrow.classList.add("opacity-40"); }
+    });
+    th.classList.add("sorted");
+    const arrow = th.querySelector(".sort-arrow");
+    if (arrow) { arrow.classList.remove("opacity-40"); arrow.classList.add("!opacity-100","!text-link"); arrow.innerHTML = sortAsc ? "&#9650;" : "&#9660;"; }
+    render();
+  };
+});
+
+function isConfirmed(f) { return f.verified || f.type === "bug"; }
+function isInvestigating(f) {
+  const resolved = new Set(["merged","wontfix","duplicate","rejected"]);
+  return !isConfirmed(f) && !resolved.has(f.status || "found");
+}
+
+function render() {
+  let data = FINDINGS.filter(f => {
+    if (activeStatuses.size && !activeStatuses.has(f.status || "found")) return false;
+    if (activeRepos.size && !activeRepos.has(f.repo || "?")) return false;
+    if (activeCategory) {
+      const [taxKey, taxVal] = activeCategory.split(":");
+      const tx = f.taxonomies || {};
+      const v = tx[taxKey];
+      if (Array.isArray(v) ? !v.includes(taxVal) : v !== taxVal) return false;
+    }
+    return true;
+  });
+  data.sort((a, b) => {
+    let va = a[sortCol] || "", vb = b[sortCol] || "";
+    if (sortCol === "severity") { va = sevOrder[va] ?? 9; vb = sevOrder[vb] ?? 9; }
+    if (sortCol === "debt_score" || sortCol === "churn" || sortCol === "fan_out" || sortCol === "roi_score" || sortCol === "info_score") { va = parseFloat(va) || 0; vb = parseFloat(vb) || 0; }
+    if (sortCol === "category") {
+      const certOrder = {definite:0, probable:1, uncertain:2};
+      const getCert = f => (f.taxonomies||{}).certainty || (isConfirmed(f)?'definite':'uncertain');
+      va = certOrder[getCert(a)] ?? 3; vb = certOrder[getCert(b)] ?? 3;
+    }
+    if (va < vb) return sortAsc ? -1 : 1;
+    if (va > vb) return sortAsc ? 1 : -1;
+    return 0;
+  });
+  const tbody = document.getElementById("tbody");
+  const empty = document.getElementById("empty");
+  if (!data.length) { tbody.innerHTML = ""; empty.classList.remove("hidden"); return; }
+  empty.classList.add("hidden");
+  currentDetailData = data;
+  tbody.innerHTML = data.map((f, idx) => {
+    const sev = f.severity || "low";
+    const status = f.status || "found";
+    const titleText = esc(f.title || "(no title)");
+    const loc = f.file + (f.line ? ":" + f.line : "");
+    const shortFile = loc.split("/").slice(-2).join("/");
+    const tx = f.taxonomies || {};
+    const certainty = tx.certainty || '';
+    const cat = tx.category || f.category || '';
+    let catBadge = '';
+    // Certainty badge
+    if (certainty === 'definite' || isConfirmed(f)) catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sev-high/15 text-sev-high">確定</span>';
+    else if (certainty === 'probable') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sev-medium/15 text-sev-medium">推定</span>';
+    else if (certainty === 'uncertain') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#ffa502]/12 text-[#ffa502]">要調査</span>';
+    else catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#ffa502]/12 text-[#ffa502]">要調査</span>';
+    // Category badge (source type)
+    if (cat.startsWith('deep:')) catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-pat/10 text-pat">'+esc(cat.replace('deep:',''))+'</span>';
+    else if (cat === 'contradiction') catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-link/10 text-link">矛盾</span>';
+    else if (cat) catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-sev-low/15 text-txt-muted">'+esc(cat)+'</span>';
+    const sevBg = sev==='high'?'bg-sev-high/15 text-sev-high':sev==='medium'?'bg-sev-medium/15 text-sev-medium':'bg-sev-low/15 text-sev-low';
+    const statusColors = {found:'bg-link/15 text-link',verified:'bg-link/25 text-link',submitted:'bg-sev-medium/15 text-sev-medium',merged:'bg-green-400/15 text-green-400',rejected:'bg-sev-high/15 text-sev-high',wontfix:'bg-sev-low/15 text-sev-low',duplicate:'bg-sev-low/15 text-sev-low'};
+    const statusCls = statusColors[status] || 'bg-link/15 text-link';
+    const roiColor = f.roi_score>=5?'text-sev-high':f.roi_score>=1?'text-sev-medium':'text-txt-muted';
+    const infoVal = f.info_score!=null?f.info_score:0;
+    const infoColor = infoVal>=3?'text-[#e879f9]':infoVal>=1?'text-[#c084fc]':'text-txt-muted';
+    const fid = esc(f.id || '');
+    return '<tr class="border-b border-surface-3 hover:bg-surface-2 transition-colors cursor-pointer" data-idx="'+idx+'" onclick="showDetail('+idx+')">'
+      +'<td class="px-3 py-2.5 align-top font-mono text-[10px] text-txt-dim cursor-copy" title="クリックでコピー: '+fid+'" onclick="event.stopPropagation();navigator.clipboard.writeText(\''+fid+'\');this.style.color=\'#0a7d5a\';setTimeout(()=>this.style.color=\'\',600)">'+fid.slice(0,12)+'</td>'
+      +'<td class="px-3 py-2.5 align-top">'+catBadge+'</td>'
+      +'<td class="px-3 py-2.5 align-top"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase '+sevBg+'">'+sev+'</span></td>'
+      +'<td class="px-3 py-2.5 align-top max-w-[400px]">'+titleText+'</td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-xs text-file" title="'+esc(loc)+'">'+esc(shortFile)+'</td>'
+      +'<td class="px-3 py-2.5 align-top"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium '+statusCls+'">'+status+'</span></td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(1):'-')+'</td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+infoColor+'" title="surprise='+((f.surprise||0).toFixed(2))+'">'+(infoVal?infoVal.toFixed(1):'-')+'</td>'
+      +'</tr>';
+  }).join("");
+}
+
+// ── Side panel detail view ──
+let currentDetailData = null;
+function showDetail(idx) {
+  const tbody = document.getElementById("tbody");
+  const rows = tbody.querySelectorAll("tr");
+  rows.forEach(r => r.classList.remove("!bg-[#eef2ff]"));
+  if (rows[idx]) rows[idx].classList.add("!bg-[#eef2ff]");
+
+  const f = currentDetailData[idx];
+  if (!f) return;
+
+  const side = document.getElementById("findings-side");
+  const inner = document.getElementById("side-inner");
+  side.classList.add("open");
+
+  const loc = f.file + (f.line ? ":" + f.line : "");
+  const locB = f.location ? (f.location.file_b || "") : "";
+  const githubLink = f.github_url ? '<a href="'+esc(f.github_url)+'" target="_blank" class="text-link text-[11px] no-underline hover:underline">GitHub &rarr;</a>' : '';
+
+  const churnColor = f.churn>10?'text-sev-high':f.churn>3?'text-sev-medium':'text-txt-muted';
+  const fanColor = f.fan_out>5?'text-sev-high':f.fan_out>2?'text-sev-medium':'text-txt-muted';
+  const roiColor = f.roi_score>=5?'text-sev-high':f.roi_score>=1?'text-sev-medium':'text-txt-muted';
+
+  const sevBg = (f.severity||'low')==='high'?'bg-sev-high/15 text-sev-high':(f.severity||'low')==='medium'?'bg-sev-medium/15 text-sev-medium':'bg-sev-low/15 text-sev-low';
+  const statusColors = {found:'bg-link/15 text-link',verified:'bg-link/25 text-link',submitted:'bg-sev-medium/15 text-sev-medium',merged:'bg-green-400/15 text-green-400',rejected:'bg-sev-high/15 text-sev-high',wontfix:'bg-sev-low/15 text-sev-low',duplicate:'bg-sev-low/15 text-sev-low'};
+  const statusCls = statusColors[f.status||'found'] || 'bg-link/15 text-link';
+
+  inner.innerHTML = ''
+    +'<button class="float-right bg-transparent border border-surface-3 text-txt-dim px-2 py-1 rounded text-[10px] cursor-pointer hover:text-sev-high hover:border-sev-high/30" onclick="closeDetail()">&times; 閉じる</button>'
+    +'<div class="text-sm font-semibold text-txt-bright mb-3 pr-10 leading-relaxed">'+esc(f.title||'(no title)')+'</div>'
+    +'<div class="flex flex-wrap gap-1.5 mb-3.5">'
+    +'<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted font-bold">'+esc(f.id||'')+'</span>'
+    +'<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-txt-muted">'+esc(f.repo||'')+'</span>'
+    +(f.pattern?'<span class="text-[10px] px-2 py-0.5 rounded bg-surface-2 border border-surface-3 text-pat">'+esc(f.pattern)+'</span>':'')
+    +'<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold '+sevBg+'">'+(f.severity||'low')+'</span>'
+    +'<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium '+statusCls+'">'+(f.status||'found')+'</span>'
+    +githubLink
+    +'</div>'
+
+    +'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">解消価値 (ROI)</div>'
+    +'<div class="grid grid-cols-2 gap-2">'
+    +'<div class="col-span-2 bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-[28px] font-bold font-mono '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(1):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">解消価値</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono '+churnColor+'">'+(f.churn||0)+'</div><div class="text-[10px] text-txt-muted mt-0.5">変更頻度 (6M)</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono '+fanColor+'">'+(f.fan_out||0)+'</div><div class="text-[10px] text-txt-muted mt-0.5">被参照数</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono text-debt">'+(f.debt_score!=null?f.debt_score.toFixed(2):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">負債スコア</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono" style="color:#e879f9">'+(f.info_score!=null?f.info_score.toFixed(1):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">情報量 <span title="-log₂P(violation)">S='+(f.surprise!=null?f.surprise.toFixed(2):'-')+'</span></div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono text-txt-muted">'+(f.found_at||'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">検出日</div></div>'
+    +'</div>'
+
+    +'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">ファイル</div>'
+    +'<div class="text-xs font-mono text-file whitespace-pre-wrap break-all leading-relaxed">'+esc(loc)
+    +(locB?'\n'+esc(locB):'')
+    +'</div>'
+
+    +(f.description?'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">詳細</div><div class="text-xs text-txt leading-relaxed whitespace-pre-wrap break-words">'+esc(f.description)+'</div>':'')
+    +(f.contradiction?'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">矛盾の内容</div><div class="text-xs text-txt leading-relaxed whitespace-pre-wrap break-words">'+esc(f.contradiction)+'</div>':'')
+    +(f.impact?'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">影響</div><div class="text-xs text-txt leading-relaxed whitespace-pre-wrap break-words">'+esc(f.impact)+'</div>':'')
+    +(f.internal_evidence?'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">内部証拠</div><div class="text-[11px] text-txt-muted leading-relaxed whitespace-pre-wrap break-words">'+esc(f.internal_evidence)+'</div>':'')
+  ;
+}
+
+function closeDetail() {
+  document.getElementById("findings-side").classList.remove("open");
+  document.querySelectorAll("#tbody tr").forEach(r => r.classList.remove("!bg-[#eef2ff]"));
+}
+
+render();
+
+// ══════════════════════════════════════
+// Trade-offs Panel
+// ══════════════════════════════════════
+let activeWhyTypes = new Set();
+
+(function initTradeoffs() {
+  if (!SUPPRESSIONS.length) { document.getElementById("tradeoff-empty").classList.remove("hidden"); return; }
+  const byType = {domain:0, technical:0, preference:0};
+  let approvedCount = 0;
+  SUPPRESSIONS.forEach(s => { const t = s.why_type||"technical"; byType[t]=(byType[t]||0)+1; if (s.approved_by) approvedCount++; });
+  const pendingCount = SUPPRESSIONS.length - approvedCount;
+  const summaryEl = document.getElementById("tradeoff-summary");
+  const cardBase = "bg-surface-2 border border-surface-3 rounded-lg px-5 py-3 min-w-[120px] text-center";
+  summaryEl.innerHTML =
+    '<div class="'+cardBase+'"><div class="text-2xl font-bold text-debt">'+SUPPRESSIONS.length+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">トレードオフ総数</div></div>'
+    +'<div class="'+cardBase+'"><div class="text-2xl font-bold text-pat">'+byType.domain+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">ドメイン制約</div></div>'
+    +'<div class="'+cardBase+'"><div class="text-2xl font-bold text-link">'+byType.technical+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">技術的判断</div></div>'
+    +'<div class="'+cardBase+'"><div class="text-2xl font-bold text-txt-muted">'+byType.preference+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">チーム慣習</div></div>'
+    +'<div class="'+cardBase+'"><div class="text-2xl font-bold text-green-400">'+approvedCount+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">承認済み</div></div>'
+    +'<div class="'+cardBase+'"><div class="text-2xl font-bold text-sev-high">'+pendingCount+'</div><div class="text-xs text-txt-muted font-semibold mt-0.5">未承認</div></div>';
+
+  const filterEl = document.getElementById("tradeoff-filters");
+  const allBtn = mkBtn("すべて", true);
+  allBtn.onclick = () => {
+    activeWhyTypes.clear();
+    filterEl.querySelectorAll("button").forEach(b => {
+      b.classList.remove("bg-link","border-link","text-white");
+      b.classList.add("bg-surface-4","border-surface-3","text-txt");
+    });
+    allBtn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+    allBtn.classList.add("bg-link","border-link","text-white");
+    renderTradeoffs();
+  };
+  filterEl.appendChild(allBtn);
+  ["domain","technical","preference"].forEach(t => {
+    const labels = {domain:"ドメイン制約", technical:"技術的判断", preference:"チーム慣習"};
+    const btn = mkBtn(labels[t]||t);
+    btn.onclick = () => {
+      allBtn.classList.remove("bg-link","border-link","text-white");
+      allBtn.classList.add("bg-surface-4","border-surface-3","text-txt");
+      if (activeWhyTypes.has(t)) {
+        activeWhyTypes.delete(t);
+        btn.classList.remove("bg-link","border-link","text-white");
+        btn.classList.add("bg-surface-4","border-surface-3","text-txt");
+      } else {
+        activeWhyTypes.add(t);
+        btn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+        btn.classList.add("bg-link","border-link","text-white");
+      }
+      if (activeWhyTypes.size===0) {
+        allBtn.classList.remove("bg-surface-4","border-surface-3","text-txt");
+        allBtn.classList.add("bg-link","border-link","text-white");
+      }
+      renderTradeoffs();
+    };
+    filterEl.appendChild(btn);
+  });
+  renderTradeoffs();
+})();
+
+function renderTradeoffs() {
+  let data = SUPPRESSIONS;
+  if (activeWhyTypes.size) data = data.filter(s => activeWhyTypes.has(s.why_type||"technical"));
+  const tbody = document.getElementById("tradeoff-tbody");
+  const empty = document.getElementById("tradeoff-empty");
+  if (!data.length) { tbody.innerHTML = ""; empty.classList.remove("hidden"); return; }
+  empty.classList.add("hidden");
+  const whyTypeColors = {domain:'bg-pat/15 text-pat', technical:'bg-link/15 text-link', preference:'bg-sev-low/15 text-sev-low'};
+  tbody.innerHTML = data.map(s => {
+    const wt = s.why_type||"technical";
+    const wtLabels = {domain:"ドメイン", technical:"技術", preference:"慣習"};
+    const wtCls = whyTypeColors[wt] || 'bg-sev-low/15 text-sev-low';
+    const files = (s.files||[]).join(" <-> ");
+    const approver = s.approved_by
+      ? '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-400/15 text-green-400">'+esc(s.approved_by)+'</span>'
+      : '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-sev-high/15 text-sev-high">未承認</span>';
+    return '<tr class="border-b border-surface-3 hover:bg-surface-2 transition-colors">'
+      +'<td class="px-3 py-2.5 font-mono text-txt-muted text-[11px]">'+esc(s.id||'')+'</td>'
+      +'<td class="px-3 py-2.5"><span class="font-mono text-[11px] text-pat">'+esc(s.pattern||'')+'</span></td>'
+      +'<td class="px-3 py-2.5 font-mono text-xs text-file">'+esc(files)+'</td>'
+      +'<td class="px-3 py-2.5"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold '+wtCls+'">'+(wtLabels[wt]||wt)+'</span></td>'
+      +'<td class="px-3 py-2.5 max-w-[400px] leading-relaxed">'+esc(s.why||'')+'</td>'
+      +'<td class="px-3 py-2.5">'+esc(s.author||'')+'</td>'
+      +'<td class="px-3 py-2.5">'+approver+'</td>'
+      +'<td class="px-3 py-2.5">'+esc(s.date||'')+'</td>'
+      +'</tr>';
+  }).join("");
+}
+</script>
+</body>
+</html>

@@ -20,6 +20,7 @@ Tiered confidence (inspired by GitNexus resolution-context.ts):
 - Dependencies below MIN_CONFIDENCE are excluded from LLM context
 """
 
+import json
 import re
 import subprocess
 from enum import Enum
@@ -300,6 +301,254 @@ def filter_source_files(files: list[str]) -> list[str]:
 
         result.append(f)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Architecture-aware dependency detection
+# ---------------------------------------------------------------------------
+
+_ARCH_PATTERNS_CACHE: dict | None = None
+
+
+def _load_arch_patterns() -> dict:
+    """Load architecture_patterns.json (cached)."""
+    global _ARCH_PATTERNS_CACHE
+    if _ARCH_PATTERNS_CACHE is not None:
+        return _ARCH_PATTERNS_CACHE
+    json_path = Path(__file__).parent / "architecture_patterns.json"
+    if json_path.exists():
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            data.pop("_doc", None)
+            _ARCH_PATTERNS_CACHE = data
+        except (json.JSONDecodeError, OSError):
+            _ARCH_PATTERNS_CACHE = {}
+    else:
+        _ARCH_PATTERNS_CACHE = {}
+    return _ARCH_PATTERNS_CACHE
+
+
+def detect_architecture(repo_path: str) -> list[str]:
+    """Detect which architectures/frameworks this repo uses.
+
+    Returns list of architecture keys (e.g., ["wordpress"], ["rails", "nextjs"]).
+    Detection uses file existence and content sampling.
+    """
+    patterns = _load_arch_patterns()
+    if not patterns:
+        return []
+
+    repo = Path(repo_path)
+    detected: list[str] = []
+
+    for arch_name, arch in patterns.items():
+        score = 0
+
+        # Check detect_files — search recursively (repos may nest frameworks
+        # under subdirs like app/html/wp-content/ instead of repo root)
+        for df in arch.get("detect_files", []):
+            # Direct path check first (fast)
+            if (repo / df).exists():
+                score += 2
+                break
+            # Recursive: look for the leaf directory/file name anywhere
+            leaf = Path(df).name or Path(df).parent.name  # handle trailing /
+            if leaf:
+                found = any(True for _ in repo.rglob(leaf) if not any(
+                    skip in str(_) for skip in [".git", "node_modules"]
+                ))
+                if found:
+                    score += 2
+                    break
+
+        # Check detect_content by sampling project files
+        content_markers = arch.get("detect_content", [])
+        if content_markers and score < 2:
+            exts = arch.get("file_extensions", [])
+            matches = 0
+            sampled = 0
+            for ext in exts:
+                for p in repo.rglob(f"*{ext}"):
+                    if sampled >= 15:
+                        break
+                    if any(skip in str(p) for skip in [
+                        "node_modules", "vendor", ".git", "__pycache__",
+                        "wp-admin", "wp-includes",
+                    ]):
+                        continue
+                    try:
+                        text = p.read_text(encoding="utf-8", errors="replace")[:5000]
+                        for marker in content_markers:
+                            if marker in text:
+                                matches += 1
+                                break
+                    except OSError:
+                        pass
+                    sampled += 1
+            # 2+ content matches = confident detection
+            if matches >= 2:
+                score += 2
+            elif matches >= 1:
+                score += 1
+
+        if score >= 2:
+            detected.append(arch_name)
+
+    return detected
+
+
+@dataclass
+class HookDep:
+    """A dependency discovered via framework hook/event pattern."""
+    source_file: str      # File that emits/dispatches
+    sink_file: str        # File that listens/handles
+    hook_name: str        # The hook/event name connecting them
+    pattern_name: str     # e.g., "action_hook", "filter_hook"
+    architecture: str     # e.g., "wordpress"
+
+
+def find_hook_dependencies(
+    repo_path: str,
+    target_files: list[str],
+    architectures: list[str] | None = None,
+) -> list[HookDep]:
+    """Find dependencies between files via framework hooks/events.
+
+    For each target file, finds hook names it emits (source patterns),
+    then finds other files that listen on those hooks (sink patterns).
+    Also finds hooks the target listens on and locates their emitters.
+
+    Args:
+        repo_path: Repository root path
+        target_files: Files to find hook dependencies for
+        architectures: Detected architectures (auto-detected if None)
+
+    Returns:
+        List of HookDep connections
+    """
+    if architectures is None:
+        architectures = detect_architecture(repo_path)
+    if not architectures:
+        return []
+
+    patterns = _load_arch_patterns()
+    repo = Path(repo_path)
+    deps: list[HookDep] = []
+    seen_pairs: set[tuple[str, str, str]] = set()  # (src, sink, hook)
+
+    for arch_name in architectures:
+        arch = patterns.get(arch_name)
+        if not arch:
+            continue
+
+        exts = set(arch.get("file_extensions", []))
+        dep_patterns = arch.get("dependency_patterns", [])
+        if not dep_patterns:
+            continue
+
+        # Build index: hook_name -> {source_files, sink_files}
+        # Only index files relevant to the target set + nearby files
+        hook_index: dict[str, dict[str, set[str]]] = {}
+        # key = hook_name, value = {"sources": {file, ...}, "sinks": {file, ...}}
+
+        # Collect all project files with matching extensions (excluding vendor dirs)
+        project_files: list[str] = []
+        for ext in exts:
+            for p in repo.rglob(f"*{ext}"):
+                rel = str(p.relative_to(repo))
+                if any(skip in rel for skip in [
+                    "node_modules", "vendor", ".git", "__pycache__",
+                    "wp-admin", "wp-includes", ".delta-lint",
+                ]):
+                    continue
+                project_files.append(rel)
+
+        # Cap to avoid scanning massive repos
+        if len(project_files) > 500:
+            # Prioritize files near targets
+            target_dirs = {str(Path(t).parent) for t in target_files}
+            near = [f for f in project_files
+                    if str(Path(f).parent) in target_dirs]
+            far = [f for f in project_files
+                   if str(Path(f).parent) not in target_dirs]
+            project_files = near + far[:500 - len(near)]
+
+        # Index hooks in all project files
+        for fpath in project_files:
+            full = repo / fpath
+            try:
+                content = full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            for dp in dep_patterns:
+                # Find source hooks (emitters)
+                for m in re.finditer(dp["source"], content):
+                    hook = m.group(1) if m.lastindex else m.group(0)
+                    if hook not in hook_index:
+                        hook_index[hook] = {"sources": set(), "sinks": set()}
+                    hook_index[hook]["sources"].add(fpath)
+
+                # Find sink hooks (listeners)
+                for m in re.finditer(dp["sink"], content):
+                    hook = m.group(1) if m.lastindex else m.group(0)
+                    if hook not in hook_index:
+                        hook_index[hook] = {"sources": set(), "sinks": set()}
+                    hook_index[hook]["sinks"].add(fpath)
+
+        # Now find connections for target files
+        for target in target_files:
+            full = repo / target
+            if not full.exists():
+                continue
+            try:
+                content = full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            for dp in dep_patterns:
+                # Target emits hook -> find sinks in other files
+                for m in re.finditer(dp["source"], content):
+                    hook = m.group(1) if m.lastindex else m.group(0)
+                    entry = hook_index.get(hook)
+                    if not entry:
+                        continue
+                    for sink_file in entry["sinks"]:
+                        if sink_file == target:
+                            continue
+                        key = (target, sink_file, hook)
+                        if key not in seen_pairs:
+                            seen_pairs.add(key)
+                            deps.append(HookDep(
+                                source_file=target,
+                                sink_file=sink_file,
+                                hook_name=hook,
+                                pattern_name=dp["name"],
+                                architecture=arch_name,
+                            ))
+
+                # Target listens on hook -> find sources in other files
+                for m in re.finditer(dp["sink"], content):
+                    hook = m.group(1) if m.lastindex else m.group(0)
+                    entry = hook_index.get(hook)
+                    if not entry:
+                        continue
+                    for src_file in entry["sources"]:
+                        if src_file == target:
+                            continue
+                        key = (src_file, target, hook)
+                        if key not in seen_pairs:
+                            seen_pairs.add(key)
+                            deps.append(HookDep(
+                                source_file=src_file,
+                                sink_file=target,
+                                hook_name=hook,
+                                pattern_name=dp["name"],
+                                architecture=arch_name,
+                            ))
+
+    return deps
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +917,62 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
             if tier == DepTier.PROJECT:
                 tier3_count += 1
 
+    # Step 3: Architecture-aware hook dependencies
+    # Discovers connections via framework hooks/events (WordPress actions,
+    # Django signals, Rails callbacks, etc.) that import analysis misses.
+    try:
+        archs = detect_architecture(repo_path)
+        if archs:
+            hook_deps = find_hook_dependencies(
+                repo_path, changed_files, architectures=archs,
+            )
+            for hd in hook_deps:
+                dep_file = hd.sink_file if hd.source_file in changed_files else hd.source_file
+                if dep_file in seen_deps:
+                    continue
+
+                full_path = repo / dep_file
+                content = _read_file_safe(full_path)
+                if content is None:
+                    continue
+
+                if total_chars + len(content) > MAX_CONTEXT_CHARS:
+                    ctx.warnings.append(
+                        f"Context limit reached ({total_chars} chars), "
+                        f"skipping remaining hook deps"
+                    )
+                    break
+
+                if len(content) > MAX_FILE_CHARS:
+                    content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+
+                ctx.dep_files.append(FileContext(
+                    path=dep_file,
+                    content=content,
+                    is_target=False,
+                    confidence=0.80,  # Between Tier 2 (0.85) and Tier 3 (0.50)
+                    dep_tier=f"hook:{hd.architecture}/{hd.pattern_name}({hd.hook_name})",
+                ))
+                seen_deps.add(dep_file)
+                total_chars += len(content)
+    except Exception:
+        pass  # Hook detection is best-effort, never block the scan
+
     return ctx
+
+
+def get_diff_content(repo_path: str, diff_target: str = "HEAD") -> str:
+    """Get git diff text for change-aware detection."""
+    if not _is_git_repo(repo_path):
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "diff", diff_target],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 def _read_file_safe(path: Path) -> str | None:
@@ -677,3 +981,257 @@ def _read_file_safe(path: Path) -> str | None:
         return path.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Smart file selection (git history-based prioritization)
+# ---------------------------------------------------------------------------
+
+def get_priority_files(
+    repo_path: str,
+    *,
+    months: int = 24,
+    max_files: int = 30,
+    max_chars: int = MAX_CONTEXT_CHARS,
+) -> list[str]:
+    """Select high-priority files for scanning based on git history.
+
+    Scoring: churn × recency × fan_out_bonus
+    - churn: number of commits touching the file
+    - recency: recent changes weighted higher (exponential decay)
+    - fan_out_bonus: files referenced by structure.json hotspots get 2× boost
+
+    Returns list of relative file paths, sorted by priority score,
+    fitting within max_chars budget.
+    """
+    import json
+    from collections import defaultdict
+    from math import exp
+
+    repo = Path(repo_path)
+    if not _is_git_repo(repo_path):
+        return []
+
+    # Step 1: Get per-file churn + recency from git log
+    result = subprocess.run(
+        ["git", "log", f"--since={months} months ago", "--format=%at", "--name-only"],
+        capture_output=True, text=True, cwd=repo_path,
+    )
+
+    file_churn: dict[str, int] = defaultdict(int)
+    file_latest_ts: dict[str, float] = {}
+    current_ts = 0.0
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.isdigit():
+            current_ts = float(line)
+        else:
+            file_churn[line] += 1
+            if line not in file_latest_ts or current_ts > file_latest_ts[line]:
+                file_latest_ts[line] = current_ts
+
+    if not file_churn:
+        return []
+
+    # Step 2: Filter to source files that still exist
+    source_files = filter_source_files(list(file_churn.keys()))
+    source_files = [f for f in source_files if (repo / f).exists()]
+
+    # Step 3: Load hotspots + fan-out from structure.json if available
+    hotspot_paths: set[str] = set()
+    fan_out_map: dict[str, int] = {}
+    structure_path = repo / ".delta-lint" / "stress-test" / "structure.json"
+    if structure_path.exists():
+        try:
+            struct = json.loads(structure_path.read_text(encoding="utf-8"))
+            for h in struct.get("hotspots", []):
+                hotspot_paths.add(h.get("path", ""))
+            # Count how many modules depend on each file
+            dep_count: dict[str, int] = defaultdict(int)
+            for m in struct.get("modules", []):
+                for dep in m.get("dependencies", []):
+                    dep_count[dep] += 1
+            fan_out_map = dict(dep_count)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Step 4: Score each file
+    import time
+    now = time.time()
+    max_churn = max(file_churn.values()) if file_churn else 1
+
+    scored: list[tuple[float, str]] = []
+    for f in source_files:
+        churn = file_churn.get(f, 0)
+        churn_norm = churn / max_churn  # 0..1
+
+        # Recency: exponential decay, half-life = 3 months
+        age_months = (now - file_latest_ts.get(f, 0)) / (30 * 86400)
+        recency = exp(-0.23 * age_months)  # 0.23 ≈ ln(2)/3
+
+        # Fan-out bonus
+        fan_bonus = 1.0
+        if f in hotspot_paths:
+            fan_bonus = 3.0
+        elif fan_out_map.get(f, 0) >= 3:
+            fan_bonus = 2.0
+        elif fan_out_map.get(f, 0) >= 1:
+            fan_bonus = 1.5
+
+        score = churn_norm * recency * fan_bonus
+        scored.append((score, f))
+
+    scored.sort(reverse=True)
+
+    # Step 5: Pack into context budget using multi-batch strategy
+    # High-churn files are often large. We return a flat list but
+    # callers can split into batches by checking sizes.
+    selected: list[str] = []
+    total_chars = 0
+    for _score, f in scored:
+        if len(selected) >= max_files:
+            break
+        fpath = repo / f
+        try:
+            size = fpath.stat().st_size
+        except OSError:
+            continue
+        # Skip tiny files (< 200 bytes) — CSS/JS stubs, empty wrappers
+        if size < 200:
+            continue
+        # Skip extremely large files (> 100KB)
+        if size > 100_000:
+            continue
+        if total_chars + size > max_chars:
+            continue
+        selected.append(f)
+        total_chars += size
+
+    return selected
+
+
+def get_priority_batches(
+    repo_path: str,
+    *,
+    months: int = 24,
+    max_batch_chars: int = MAX_CONTEXT_CHARS,
+) -> list[list[str]]:
+    """Split priority files into multiple batches for parallel scanning.
+
+    Large high-churn files get their own batch (solo scan).
+    Remaining files are packed greedily into batches.
+    Returns list of batches, each a list of file paths.
+    """
+    import json
+    from collections import defaultdict
+    from math import exp
+    import time
+
+    repo = Path(repo_path)
+    if not _is_git_repo(repo_path):
+        return []
+
+    # Reuse scoring logic from get_priority_files but with all files
+    result = subprocess.run(
+        ["git", "log", f"--since={months} months ago", "--format=%at", "--name-only"],
+        capture_output=True, text=True, cwd=repo_path,
+    )
+
+    file_churn: dict[str, int] = defaultdict(int)
+    file_latest_ts: dict[str, float] = {}
+    current_ts = 0.0
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.isdigit():
+            current_ts = float(line)
+        else:
+            file_churn[line] += 1
+            if line not in file_latest_ts or current_ts > file_latest_ts[line]:
+                file_latest_ts[line] = current_ts
+
+    if not file_churn:
+        return []
+
+    source_files = filter_source_files(list(file_churn.keys()))
+    source_files = [f for f in source_files if (repo / f).exists()]
+
+    # Load hotspots
+    hotspot_paths: set[str] = set()
+    fan_out_map: dict[str, int] = {}
+    structure_path = repo / ".delta-lint" / "stress-test" / "structure.json"
+    if structure_path.exists():
+        try:
+            struct = json.loads(structure_path.read_text(encoding="utf-8"))
+            for h in struct.get("hotspots", []):
+                hotspot_paths.add(h.get("path", ""))
+            dep_count: dict[str, int] = defaultdict(int)
+            for m in struct.get("modules", []):
+                for dep in m.get("dependencies", []):
+                    dep_count[dep] += 1
+            fan_out_map = dict(dep_count)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    now = time.time()
+    max_churn = max(file_churn.values()) if file_churn else 1
+
+    scored: list[tuple[float, str, int]] = []  # (score, path, size)
+    for f in source_files:
+        fpath = repo / f
+        try:
+            size = fpath.stat().st_size
+        except OSError:
+            continue
+        if size < 200 or size > 100_000:
+            if size > 100_000:
+                # Large files still considered — will be solo batched
+                pass
+            else:
+                continue
+
+        churn_norm = file_churn.get(f, 0) / max_churn
+        age_months = (now - file_latest_ts.get(f, 0)) / (30 * 86400)
+        recency = exp(-0.23 * age_months)
+
+        fan_bonus = 1.0
+        if f in hotspot_paths:
+            fan_bonus = 3.0
+        elif fan_out_map.get(f, 0) >= 3:
+            fan_bonus = 2.0
+        elif fan_out_map.get(f, 0) >= 1:
+            fan_bonus = 1.5
+
+        score = churn_norm * recency * fan_bonus
+        scored.append((score, f, size))
+
+    scored.sort(reverse=True)
+
+    # Split into batches: large files solo, small files packed
+    batches: list[list[str]] = []
+    current_batch: list[str] = []
+    current_size = 0
+
+    for _score, f, size in scored[:100]:  # Top 100 files max
+        if size > max_batch_chars // 2:
+            # Large file → solo batch
+            batches.append([f])
+        else:
+            if current_size + size > max_batch_chars:
+                if current_batch:
+                    batches.append(current_batch)
+                current_batch = [f]
+                current_size = size
+            else:
+                current_batch.append(f)
+                current_size += size
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches

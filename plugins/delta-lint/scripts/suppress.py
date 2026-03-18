@@ -53,6 +53,7 @@ class SuppressEntry:
     date: str
     author: str
     line_ranges: list[str] = field(default_factory=list)  # optional
+    approved_by: str = ""            # 承認者（空 = 未承認 = 自己判断）
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,7 @@ def load_suppressions(repo_path: str) -> list[SuppressEntry]:
                 date=str(item.get("date", "")),
                 author=str(item.get("author", "")),
                 line_ranges=list(item.get("line_ranges", [])),
+                approved_by=str(item.get("approved_by", "")),
             )
             entries.append(entry)
         except (TypeError, ValueError):
@@ -218,6 +220,8 @@ def save_suppressions(repo_path: str, entries: list[SuppressEntry]) -> Path:
         }
         if e.line_ranges:
             item["line_ranges"] = e.line_ranges
+        if e.approved_by:
+            item["approved_by"] = e.approved_by
         data.append(item)
 
     if yaml is not None:

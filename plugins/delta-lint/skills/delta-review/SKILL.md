@@ -1,46 +1,42 @@
 ---
 name: delta-review
 description: >
-  Pre-implementation impact analysis and design review for code changes.
-  Analyzes affected files, implicit contracts, and potential contradictions
-  before writing code. Use when user says "delta review", "delta-review",
-  "delta plan", "影響範囲チェック", "事前チェック", "impact analysis", or similar.
-  Auto-triggers when user proposes code changes and .delta-lint/ exists.
+  Pre-implementation impact analysis for code changes. Has two modes:
+  (1) FULL MODE - explicit "delta review", "delta plan", "影響範囲チェック" etc.
+  (2) AUTO MODE - triggers when user proposes implementation ("〇〇を実装して",
+  "〇〇を追加したい", "〇〇を修正して", "これ実装できる？", "こういう機能作りたい",
+  "こういう修正どうなる？", "気をつけたほうがいいことは？") AND .delta-lint/ exists.
+  Auto mode is lightweight: 1-3 line risk summary, no confirmation, proceeds immediately.
 compatibility: Python 3.11+, git. macOS/Linux/Windows.
 metadata:
   author: karesansui-u
-  version: 0.3.0
+  version: 0.4.0
 ---
 
 # delta-review: Pre-Implementation Impact Analysis
 
-Analyzes the impact of proposed code changes before implementation. Identifies affected files, implicit contracts between modules, and potential structural contradictions that could arise from the change.
+Two modes based on how it's triggered.
 
 ## Prerequisites
 
-- `.delta-lint/` must exist (run `/delta-init` first)
+- `.delta-lint/` must exist (auto-created on first `/delta-scan`)
 - Python 3.11+, git
 
 ## Script Location
 
 All scripts are in: `scripts/` (relative to the plugin root).
 
-## When This Triggers
+## Mode Selection
 
-1. User explicitly says "delta review", "delta plan", "影響範囲", "事前チェック", etc.
-2. **Auto-trigger**: User proposes any code change (new feature, bug fix, refactoring, performance improvement, etc.) AND `.delta-lint/` exists in the repo.
+### FULL MODE (explicit trigger)
+- "delta review", "delta plan", "影響範囲チェック", "事前チェック", "impact analysis"
+- → Full workflow: [workflow-plan.md](references/workflow-plan.md)
 
-## Workflow
-
-| Step | What it does |
-|------|-------------|
-| Affected files | Identify files impacted by the proposed change |
-| Implicit contracts | Analyze assumptions between affected modules |
-| Pre-scan | Auto-run delta scan on high-risk files |
-| Design review | Background sub-agent reviews design decisions |
-| Proposal | Present implementation plan with risks and recommendations |
-
-Reference: [workflow-plan.md](references/workflow-plan.md)
+### AUTO MODE (implementation trigger)
+- User proposes any code change, new feature, bug fix, refactoring, spec discussion
+- Examples: 「〇〇を追加したい」「〇〇を実装して」「これ修正して」「こういう機能作りたい」「これ実装できる？」「追加するとき気をつけることは？」
+- → Lightweight pre-check: [workflow-autocheck.md](references/workflow-autocheck.md)
+- **確認を求めない。止めない。チェック結果を出してそのまま作業に入る。**
 
 ## Quick Reference
 

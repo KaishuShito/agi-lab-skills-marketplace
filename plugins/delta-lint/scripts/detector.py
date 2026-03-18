@@ -54,8 +54,24 @@ def load_system_prompt(lang: str = "en") -> str:
     return prompt.replace("{lang_instruction}", lang_instruction)
 
 
-def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
-    """Build the user prompt with code context."""
+def build_user_prompt(context: ModuleContext, repo_name: str = "",
+                      constraints: list[dict] | None = None,
+                      architecture: list[str] | None = None,
+                      diff_text: str = "") -> str:
+    """Build the user prompt with code context.
+
+    Args:
+        context: ModuleContext from retrieval layer
+        repo_name: Optional repository name
+        constraints: Optional list of {path, implicit_constraints} dicts
+            from structure.json. Only constraints relevant to target files
+            are included — these represent known invariants that may not
+            be obvious from the code alone (e.g. veteran knowledge).
+        architecture: Optional list of architectural context strings from
+            team policy. These describe intentional design decisions that
+            should NOT be flagged as contradictions.
+        diff_text: Optional git diff output showing exactly which lines changed.
+    """
     header = "Analyze the following source code files for structural contradictions.\n"
     if repo_name:
         header += f"Repository: {repo_name}\n"
@@ -64,7 +80,160 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
         "Look for contradictions BETWEEN different files/functions — "
         "places where one module's assumptions contradict another module's behavior.\n\n"
     )
-    return header + context.to_prompt_string()
+
+    prompt = header + context.to_prompt_string()
+
+    # Inject diff context — shows LLM exactly which lines were changed
+    if diff_text:
+        prompt += "\n\n## Recent Changes (git diff)\n\n"
+        prompt += (
+            "The following diff shows the exact lines that were recently modified. "
+            "Focus your analysis on these changes and their siblings: "
+            "if a function was updated here, check whether its counterparts "
+            "(parallel handlers, paired serializers, shared-contract functions) "
+            "are still consistent.\n\n"
+        )
+        prompt += f"```diff\n{diff_text}\n```"
+
+    # Inject architectural context (team policy — reduces false positives)
+    if architecture:
+        prompt += "\n\n## Architectural Context (team policy)\n\n"
+        prompt += (
+            "The following are **intentional design decisions** by this team. "
+            "Do NOT flag these as contradictions — they are accepted trade-offs.\n\n"
+        )
+        for item in architecture:
+            prompt += f"- {item}\n"
+
+    # Inject known constraints if available
+    if constraints:
+        prompt += "\n\n## Known Constraints (from project knowledge base)\n\n"
+        prompt += (
+            "The following implicit constraints have been identified for these modules. "
+            "Use them to detect contradictions more accurately — a code change that "
+            "violates these constraints is a strong signal of a structural contradiction.\n\n"
+        )
+        for c in constraints:
+            path = c.get("path", "")
+            items = c.get("implicit_constraints", [])
+            if items:
+                prompt += f"**{path}**:\n"
+                for item in items:
+                    prompt += f"- {item}\n"
+                prompt += "\n"
+
+    return prompt
+
+
+def load_policy(repo_path: str) -> dict:
+    """Load team policy from constraints.yml.
+
+    Returns dict with optional keys:
+      architecture: list[str]  — context for LLM (injected into prompt)
+      accepted: list[dict]     — findings to suppress (id or pattern+file)
+      severity_overrides: list[dict] — severity adjustments per pattern/file
+      debt_budget: float|None  — max allowed active debt score (CI gate)
+    """
+    constraints_path = Path(repo_path) / ".delta-lint" / "constraints.yml"
+    if not constraints_path.exists():
+        return {}
+
+    try:
+        import yaml
+    except ImportError:
+        return {}
+
+    try:
+        data = yaml.safe_load(constraints_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return (data or {}).get("policy", {})
+
+
+def load_constraints(repo_path: str, target_files: list[str]) -> list[dict]:
+    """Load implicit constraints for target files.
+
+    Merges two sources:
+    1. .delta-lint/constraints.yml — manual/Claude Code entries (takes priority)
+    2. .delta-lint/stress-test/structure.json — LLM auto-extracted
+
+    constraints.yml is never overwritten by delta init.
+    structure.json is regenerated on every delta init.
+
+    Returns list of {path, implicit_constraints, source} dicts.
+    """
+    all_constraints: dict[str, dict] = {}  # path -> {constraints: [], source: str}
+
+    # 1. Load structure.json (auto-extracted, lower priority)
+    structure_path = Path(repo_path) / ".delta-lint" / "stress-test" / "structure.json"
+    if structure_path.exists():
+        try:
+            data = json.loads(structure_path.read_text(encoding="utf-8"))
+            for mod in data.get("modules", []):
+                mod_path = mod.get("path", "")
+                items = mod.get("implicit_constraints", [])
+                if mod_path and items:
+                    all_constraints[mod_path] = {
+                        "implicit_constraints": items,
+                        "source": "auto",
+                    }
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 2. Load constraints.yml (manual entries, higher priority — overwrites auto)
+    constraints_path = Path(repo_path) / ".delta-lint" / "constraints.yml"
+    if constraints_path.exists():
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        if yaml:
+            try:
+                data = yaml.safe_load(constraints_path.read_text(encoding="utf-8"))
+                for entry in (data or {}).get("constraints", []):
+                    path = entry.get("file", "")
+                    items = entry.get("rules", [])
+                    if path and items:
+                        if path in all_constraints:
+                            # Merge: manual rules prepended, auto rules appended
+                            existing = all_constraints[path]["implicit_constraints"]
+                            merged = items + [r for r in existing if r not in items]
+                            all_constraints[path] = {
+                                "implicit_constraints": merged,
+                                "source": "manual+auto",
+                            }
+                        else:
+                            all_constraints[path] = {
+                                "implicit_constraints": items,
+                                "source": "manual",
+                            }
+            except Exception:
+                pass
+
+    if not all_constraints:
+        return []
+
+    # Filter to constraints relevant to target files
+    target_set = set()
+    for f in target_files:
+        target_set.add(f)
+        if f.startswith("./"):
+            target_set.add(f[2:])
+
+    relevant = []
+    for mod_path, info in all_constraints.items():
+        is_match = mod_path in target_set or any(
+            mod_path.endswith(t) or t.endswith(mod_path) for t in target_set
+        )
+        if is_match:
+            relevant.append({
+                "path": mod_path,
+                "implicit_constraints": info["implicit_constraints"],
+                "source": info["source"],
+            })
+
+    return relevant
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +243,10 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "") -> str:
 def detect(context: ModuleContext, repo_name: str = "",
            model: str = "claude-sonnet-4-20250514",
            backend: str = "cli",
-           lang: str = "en") -> list[dict]:
+           lang: str = "en",
+           constraints: list[dict] | None = None,
+           architecture: list[str] | None = None,
+           diff_text: str = "") -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
@@ -83,12 +255,17 @@ def detect(context: ModuleContext, repo_name: str = "",
         model: Model identifier
         backend: "cli" (claude -p, $0, default), "api" (SDK/HTTP, pay-per-use)
         lang: Output language for descriptive fields ("en" or "ja")
+        constraints: Optional implicit constraints from structure.json
+        architecture: Optional architectural context from team policy
+        diff_text: Optional git diff output for change-aware detection
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
     """
     system_prompt = load_system_prompt(lang=lang)
-    user_prompt = build_user_prompt(context, repo_name)
+    user_prompt = build_user_prompt(context, repo_name, constraints=constraints,
+                                    architecture=architecture,
+                                    diff_text=diff_text)
 
     if backend == "cli" and not _cli_available():
         backend = "api"
@@ -124,7 +301,8 @@ def _detect_cli(system_prompt: str, user_prompt: str) -> str:
     """Call Claude via claude -p (subscription CLI, $0 cost)."""
     prompt = system_prompt + "\n\n" + user_prompt
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        ["claude", "-p"],
+        input=prompt,
         capture_output=True, text=True, timeout=300,
     )
     if result.returncode != 0:
@@ -139,6 +317,7 @@ def _detect_anthropic_sdk(system_prompt: str, user_prompt: str, model: str) -> s
     message = client.messages.create(
         model=model,
         max_tokens=4096,
+        temperature=0,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -161,6 +340,7 @@ def _detect_requests(system_prompt: str, user_prompt: str, model: str) -> str:
         json={
             "model": model,
             "max_tokens": 4096,
+            "temperature": 0,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_prompt}],
         },

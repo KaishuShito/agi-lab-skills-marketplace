@@ -1,0 +1,145 @@
+{
+  "_doc": "Framework/architecture-specific dependency patterns for delta-lint retrieval. Each entry defines how to detect the architecture and how modules connect beyond import/require.",
+
+  "wordpress": {
+    "detect_files": ["wp-content/plugins/", "functions.php", "wp-config.php"],
+    "detect_content": ["add_action(", "apply_filters(", "do_action("],
+    "file_extensions": [".php"],
+    "dependency_patterns": [
+      {
+        "name": "action_hook",
+        "description": "do_action('hook') -> add_action('hook', callback)",
+        "source": "do_action\\s*\\(\\s*['\"]([^'\"]+)['\"]",
+        "sink": "add_action\\s*\\(\\s*['\"]([^'\"]+)['\"]"
+      },
+      {
+        "name": "filter_hook",
+        "description": "apply_filters('hook', ...) -> add_filter('hook', callback)",
+        "source": "apply_filters\\s*\\(\\s*['\"]([^'\"]+)['\"]",
+        "sink": "add_filter\\s*\\(\\s*['\"]([^'\"]+)['\"]"
+      }
+    ]
+  },
+
+  "rails": {
+    "detect_files": ["Gemfile", "config/routes.rb", "app/controllers/"],
+    "detect_content": ["class ApplicationController", "Rails.application"],
+    "file_extensions": [".rb"],
+    "dependency_patterns": [
+      {
+        "name": "callback",
+        "description": "before_action/after_action/around_action callbacks",
+        "source": "(?:before|after|around)_action\\s+:(\\w+)",
+        "sink": "def\\s+(\\w+)"
+      },
+      {
+        "name": "concern",
+        "description": "include Concern modules",
+        "source": "include\\s+(\\w+(?:::\\w+)*)",
+        "sink": "module\\s+(\\w+(?:::\\w+)*)"
+      }
+    ]
+  },
+
+  "django": {
+    "detect_files": ["manage.py", "settings.py", "urls.py"],
+    "detect_content": ["INSTALLED_APPS", "django.contrib", "from django"],
+    "file_extensions": [".py"],
+    "dependency_patterns": [
+      {
+        "name": "signal",
+        "description": "signal.send() -> @receiver(signal) or signal.connect()",
+        "source": "\\.send\\s*\\(",
+        "sink": "@receiver\\s*\\(|\\bconnect\\s*\\("
+      },
+      {
+        "name": "url_view",
+        "description": "urlpatterns path() -> view function",
+        "source": "path\\s*\\([^,]+,\\s*(\\w+(?:\\.\\w+)*)",
+        "sink": "def\\s+(\\w+)\\s*\\(request"
+      }
+    ]
+  },
+
+  "spring": {
+    "detect_files": ["pom.xml", "build.gradle"],
+    "detect_content": ["@SpringBootApplication", "@Autowired", "org.springframework"],
+    "file_extensions": [".java", ".kt"],
+    "dependency_patterns": [
+      {
+        "name": "autowired",
+        "description": "@Autowired / constructor injection",
+        "source": "@Autowired[\\s\\S]*?(\\w+)\\s+\\w+",
+        "sink": "@(?:Service|Component|Repository|Controller)\\s+.*class\\s+(\\w+)"
+      },
+      {
+        "name": "event",
+        "description": "ApplicationEventPublisher -> @EventListener",
+        "source": "publishEvent\\s*\\(\\s*new\\s+(\\w+)",
+        "sink": "@EventListener[\\s\\S]*?(\\w+)\\s+\\w+\\s*\\("
+      }
+    ]
+  },
+
+  "laravel": {
+    "detect_files": ["artisan", "composer.json", "app/Http/Kernel.php"],
+    "detect_content": ["Illuminate\\", "use App\\", "Route::"],
+    "file_extensions": [".php"],
+    "dependency_patterns": [
+      {
+        "name": "event_listener",
+        "description": "Event::dispatch() -> EventServiceProvider $listen",
+        "source": "(?:Event::dispatch|event)\\s*\\(\\s*new\\s+(\\w+)",
+        "sink": "(\\w+)::class\\s*=>\\s*\\["
+      },
+      {
+        "name": "service_provider",
+        "description": "app()->make() / resolve() bindings",
+        "source": "app\\(\\)\\->make\\(['\"]([^'\"]+)['\"]\\)",
+        "sink": "\\$this->app->bind\\(['\"]([^'\"]+)['\"]"
+      }
+    ]
+  },
+
+  "flutter": {
+    "detect_files": ["pubspec.yaml", "lib/main.dart"],
+    "detect_content": ["import 'package:flutter", "StatelessWidget", "StatefulWidget"],
+    "file_extensions": [".dart"],
+    "dependency_patterns": [
+      {
+        "name": "provider",
+        "description": "Provider.of<T>() / context.read<T>() -> ChangeNotifierProvider<T>",
+        "source": "(?:Provider\\.of|context\\.(?:read|watch))\\s*<(\\w+)>",
+        "sink": "(?:ChangeNotifierProvider|Provider)\\s*<(\\w+)>"
+      }
+    ]
+  },
+
+  "express": {
+    "detect_files": ["package.json"],
+    "detect_content": ["express()", "app.use(", "app.get(", "app.post("],
+    "file_extensions": [".js", ".ts", ".mjs"],
+    "dependency_patterns": [
+      {
+        "name": "middleware",
+        "description": "app.use(middleware) chain ordering",
+        "source": "app\\.use\\s*\\(\\s*(\\w+)",
+        "sink": "(?:module\\.exports|export)\\s*=\\s*.*function\\s*(\\w+)|const\\s+(\\w+)\\s*=.*(?:req|res|next)"
+      }
+    ]
+  },
+
+  "nextjs": {
+    "detect_files": ["next.config.js", "next.config.mjs", "next.config.ts", "app/layout.tsx"],
+    "detect_content": ["from 'next", "import { NextResponse", "getServerSideProps"],
+    "file_extensions": [".js", ".ts", ".jsx", ".tsx"],
+    "dependency_patterns": [
+      {
+        "name": "server_action",
+        "description": "'use server' functions called from client components",
+        "source": "import\\s*\\{([^}]+)\\}\\s*from\\s*['\"].*actions",
+        "sink": "'use server'"
+      }
+    ]
+  }
+}

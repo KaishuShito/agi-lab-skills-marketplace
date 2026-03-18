@@ -19,6 +19,7 @@ from typing import Optional
 
 
 FINDINGS_DIR = ".delta-lint/findings"
+SCAN_HISTORY_FILE = ".delta-lint/scan_history.jsonl"
 INDEX_FILE = "_index.md"
 
 # Valid values
@@ -33,6 +34,247 @@ VALID_STATUSES = (
     "wontfix",      # 意図的な設計
     "duplicate",    # 既知の問題
 )
+
+
+# Category is a free-form string — not validated.
+# Known values (extensible):
+#   "contradiction"  — two modules contradict each other (①-⑥)
+#   "structural"     — not broken yet, but fragile (⑦-⑩)
+#   "deep:hook"      — deep scan: hook-related mismatch
+#   "deep:constant"  — deep scan: constant conflict
+#   "deep:class"     — deep scan: missing parent class
+# Add new categories freely; no whitelist enforcement.
+
+# --- Debt Score Calculation ---
+# Weights are centralized in scoring.py. Module-level references for
+# backward compatibility and use in contexts without repo_path.
+from scoring import (
+    DEFAULT_SEVERITY_WEIGHT as SEVERITY_WEIGHT,
+    DEFAULT_STATUS_MULTIPLIER as STATUS_MULTIPLIER,
+    DEFAULT_PATTERN_WEIGHT as PATTERN_WEIGHT,
+    ScoringConfig,
+    load_scoring_config,
+    compute_roi,
+)
+
+
+def finding_debt_score(f: dict, cfg: ScoringConfig | None = None) -> float:
+    """Calculate debt score for a single finding.
+
+    score = severity_weight × pattern_weight × status_multiplier
+    merged/wontfix → 0 (resolved), but history remains in JSONL.
+
+    If cfg is provided, uses team-customized weights from config.json.
+    Otherwise uses built-in defaults.
+    """
+    sw = cfg.severity_weight if cfg else SEVERITY_WEIGHT
+    pw = cfg.pattern_weight if cfg else PATTERN_WEIGHT
+    sm = cfg.status_multiplier if cfg else STATUS_MULTIPLIER
+
+    sev = sw.get(f.get("severity", "low"), 0.3)
+    pat = pw.get(f.get("pattern", ""), 0.5)
+    status = sm.get(f.get("status", "found"), 1.0)
+    return round(sev * pat * status, 3)
+
+
+def compute_debt_summary(findings: list[dict], cfg: ScoringConfig | None = None) -> dict:
+    """Compute aggregate debt metrics from a list of findings.
+
+    Returns dict with: total_debt, active_debt, active_count, total_count, resolution_rate.
+    """
+    sm = cfg.status_multiplier if cfg else STATUS_MULTIPLIER
+    active = [f for f in findings if sm.get(f.get("status"), 1.0) > 0]
+    total_debt = sum(finding_debt_score(f, cfg) for f in findings)
+    active_debt = sum(finding_debt_score(f, cfg) for f in active)
+    return {
+        "total_debt": round(total_debt, 1),
+        "active_debt": round(active_debt, 1),
+        "active_count": len(active),
+        "total_count": len(findings),
+        "resolution_rate": round((1 - len(active) / max(len(findings), 1)) * 100),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scan history tracking
+# ---------------------------------------------------------------------------
+
+def append_scan_history(
+    base_path: str | Path,
+    *,
+    clusters: int = 0,
+    findings_count: int = 0,
+    duration_sec: float = 0.0,
+    scan_type: str = "existing",  # "existing" | "diff" | "stress" | "deep"
+    finding_ids: list[str] | None = None,
+    patterns_found: list[str] | None = None,
+) -> None:
+    """Append a scan record to scan_history.jsonl.
+
+    finding_ids: Chao1 推定に使用。このスキャンで検出された finding ID 一覧。
+    patterns_found: パターン別 surprise 計算に使用。検出されたパターン番号一覧。
+    """
+    path = Path(base_path) / SCAN_HISTORY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "scan_type": scan_type,
+        "clusters": clusters,
+        "findings_count": findings_count,
+        "duration_sec": round(duration_sec, 1),
+    }
+    if finding_ids is not None:
+        record["finding_ids"] = finding_ids
+    if patterns_found is not None:
+        record["patterns_found"] = sorted(set(patterns_found))
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def load_scan_history(base_path: str | Path) -> list[dict]:
+    """Load all scan history records."""
+    path = Path(base_path) / SCAN_HISTORY_FILE
+    if not path.exists():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+def compute_scan_depth(base_path: str | Path) -> dict:
+    """Compute scan depth/confidence from history.
+
+    Returns dict with: scan_count, total_clusters, grade, last_scan.
+    Grade: D(初回) → C(2-3回) → B(4-6回) → A(7+回)
+    """
+    history = load_scan_history(base_path)
+    scan_count = len(history)
+    total_clusters = sum(r.get("clusters", 0) for r in history)
+    last_scan = history[-1].get("timestamp", "")[:16].replace("T", " ") if history else ""
+
+    if scan_count == 0:
+        grade = "-"
+    elif scan_count == 1:
+        grade = "D"
+    elif scan_count <= 3:
+        grade = "C"
+    elif scan_count <= 6:
+        grade = "B"
+    else:
+        grade = "A"
+
+    return {
+        "scan_count": scan_count,
+        "total_clusters": total_clusters,
+        "grade": grade,
+        "last_scan": last_scan,
+    }
+
+
+def apply_policy(findings: list[dict], policy: dict) -> list[dict]:
+    """Apply team policy to findings (post-detection).
+
+    - accepted: remove findings matching id or pattern+file glob
+    - severity_overrides: adjust severity for matching findings
+
+    Returns filtered list (accepted findings are removed).
+    """
+    if not policy:
+        return findings
+
+    accepted_rules = policy.get("accepted", [])
+    severity_rules = policy.get("severity_overrides", [])
+
+    if not accepted_rules and not severity_rules:
+        return findings
+
+    # Build accepted lookup
+    accepted_ids: set[str] = set()
+    accepted_patterns: list[dict] = []
+    for rule in accepted_rules:
+        if "id" in rule:
+            accepted_ids.add(rule["id"])
+        elif "pattern" in rule:
+            accepted_patterns.append(rule)
+
+    result = []
+    for f in findings:
+        # Check accepted by ID
+        fid = f.get("id", "")
+        if fid and fid in accepted_ids:
+            continue
+
+        # Check accepted by pattern + file glob
+        f_pattern = f.get("pattern", "")
+        f_file = _finding_file(f)
+        is_accepted = False
+        for rule in accepted_patterns:
+            if rule.get("pattern") and rule["pattern"] != f_pattern:
+                continue
+            rule_file = rule.get("file", "")
+            if rule_file and not _glob_match(f_file, rule_file):
+                continue
+            is_accepted = True
+            break
+
+        if is_accepted:
+            continue
+
+        # Apply severity overrides
+        for rule in severity_rules:
+            rule_pattern = rule.get("pattern", "")
+            rule_file = rule.get("file", "")
+            new_sev = rule.get("severity", "")
+            if rule_pattern and rule_pattern != f_pattern:
+                continue
+            if rule_file and not _glob_match(f_file, rule_file):
+                continue
+            if new_sev in ("high", "medium", "low"):
+                f = dict(f)  # copy to avoid mutating original
+                f["severity"] = new_sev
+                break
+
+        result.append(f)
+
+    return result
+
+
+def _finding_file(f: dict) -> str:
+    """Extract file path from a finding dict."""
+    # findings from detect() have location.file_a
+    loc = f.get("location", {})
+    if isinstance(loc, dict):
+        return loc.get("file_a", f.get("file", ""))
+    return f.get("file", "")
+
+
+def _glob_match(filepath: str, pattern: str) -> bool:
+    """Simple glob match: supports * wildcard at end of path segments.
+
+    Examples:
+      _glob_match("src/legacy/old.ts", "src/legacy/*") → True
+      _glob_match("src/api/v2/handler.ts", "src/api/*") → True
+      _glob_match("src/core/main.ts", "src/api/*") → False
+      _glob_match("src/auth.ts", "src/auth.ts") → True (exact)
+    """
+    if not pattern:
+        return True
+    if pattern == filepath:
+        return True
+    # Handle trailing wildcard: "src/legacy/*" matches anything under src/legacy/
+    if pattern.endswith("/*"):
+        prefix = pattern[:-1]  # "src/legacy/"
+        return filepath.startswith(prefix)
+    # Handle single * in middle (fnmatch-style)
+    import fnmatch
+    return fnmatch.fnmatch(filepath, pattern)
 
 
 @dataclass
@@ -52,6 +294,14 @@ class Finding:
     found_at: str = ""
     verified: bool = False
     tags: list[str] | None = None
+    category: str = ""  # legacy — use taxonomies instead
+    taxonomies: dict | None = None
+    # WordPress-style taxonomy/term system. Values can be str or list[str].
+    # Example: {"category": "deep:hook", "certainty": "definite",
+    #           "assignee": ["tanaka", "suzuki"], "milestone": "v2.1"}
+    churn_6m: int = 0       # git commits touching file in last 6 months
+    fan_out: int = 0        # number of files referencing this file
+    total_lines: int = 0    # line count of primary file (for entropy)
 
 
 def _findings_dir(base_path: str | Path) -> Path:
@@ -64,9 +314,20 @@ def _repo_file(base_path: str | Path, repo_name: str) -> Path:
     return _findings_dir(base_path) / f"{safe_name}.jsonl"
 
 
-def generate_id(repo: str, file: str, title: str) -> str:
-    """Generate a short deterministic ID from repo+file+title."""
-    h = hashlib.sha256(f"{repo}:{file}:{title}".encode()).hexdigest()[:8]
+def generate_id(repo: str, file: str, title: str,
+                file_b: str = "", pattern: str = "") -> str:
+    """Generate a short deterministic ID.
+
+    When file_b and pattern are provided, uses structural identity
+    (file pair + pattern) instead of title — immune to LLM wording variance.
+    Falls back to repo:file:title for manual additions or single-file findings.
+    """
+    if file_b and pattern:
+        files = sorted([file, file_b])
+        key = f"{repo}:{files[0]}:{files[1]}:{pattern}"
+    else:
+        key = f"{repo}:{file}:{title}"
+    h = hashlib.sha256(key.encode()).hexdigest()[:8]
     safe_repo = repo.split("/")[-1] if "/" in repo else repo
     return f"{safe_repo}-{h}"
 
@@ -87,13 +348,24 @@ def _load_lines(path: Path) -> list[dict]:
     return lines
 
 
+def _migrate_taxonomies(entry: dict) -> dict:
+    """Migrate legacy category field into taxonomies dict."""
+    if entry.get("taxonomies") is None:
+        entry["taxonomies"] = {}
+    # Legacy category → taxonomies["category"]
+    cat = entry.get("category", "")
+    if cat and "category" not in entry["taxonomies"]:
+        entry["taxonomies"]["category"] = cat
+    return entry
+
+
 def _get_latest(lines: list[dict]) -> dict[str, dict]:
     """Collapse event log: for each id, keep the latest entry."""
     latest: dict[str, dict] = {}
     for entry in lines:
         fid = entry.get("id", "")
         if fid:
-            latest[fid] = entry
+            latest[fid] = _migrate_taxonomies(entry)
     return latest
 
 
@@ -347,8 +619,10 @@ def cmd_findings(args) -> None:
         _findings_stats(base_path, args)
     elif args.findings_command == "index":
         _findings_index(base_path, args)
+    elif args.findings_command == "dashboard":
+        _findings_dashboard(base_path, args)
     else:
-        print("Usage: delta-lint findings {add|list|update|search|stats|index}", file=sys.stderr)
+        print("Usage: delta-lint findings {add|list|update|search|stats|index|dashboard}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -475,3 +749,517 @@ def _findings_stats(base_path: str, args) -> None:
 def _findings_index(base_path: str, args) -> None:
     path = save_index(base_path)
     print(f"Index generated: {path}")
+
+
+def _findings_dashboard(base_path: str, args) -> None:
+    # Build treemap JSON if stress-test results exist
+    treemap_json = None
+    results_path = Path(base_path) / ".delta-lint" / "stress-test" / "results.json"
+    if results_path.exists():
+        try:
+            from visualize import build_treemap_json
+            treemap_json = build_treemap_json(str(results_path))
+        except Exception:
+            pass
+    path = generate_dashboard(base_path, treemap_json=treemap_json)
+    print(f"Dashboard generated: {path}")
+
+
+# ---------------------------------------------------------------------------
+# Stress-test → debt findings conversion
+# ---------------------------------------------------------------------------
+
+def ingest_stress_test_debt(base_path: str | Path) -> list[str]:
+    """Convert high-risk files from stress-test results into debt findings.
+
+    Reads results.json + structure.json, calculates per-file risk scores,
+    and registers files above threshold as debt findings (⑧ or ⑩).
+
+    Returns list of finding IDs added (skips duplicates).
+    """
+    base = Path(base_path)
+    results_path = base / ".delta-lint" / "stress-test" / "results.json"
+    structure_path = base / ".delta-lint" / "stress-test" / "structure.json"
+
+    if not results_path.exists():
+        return []
+
+    data = json.loads(results_path.read_text(encoding="utf-8"))
+    repo_name = data.get("metadata", {}).get("repo_name", base.name)
+
+    # Build per-file risk: sum severity scores across all modifications
+    file_risk: dict[str, int] = {}
+    file_findings_count: dict[str, int] = {}
+    for r in data.get("results", []):
+        mod = r.get("modification", {})
+        target = mod.get("file", "")
+        findings = r.get("findings", [])
+        for f in findings:
+            score = {"high": 3, "medium": 2, "low": 1}.get(f.get("severity", "low"), 1)
+            for af in mod.get("affected_files", [target]):
+                file_risk[af] = file_risk.get(af, 0) + score
+                file_findings_count[af] = file_findings_count.get(af, 0) + 1
+
+    if not file_risk:
+        return []
+
+    # Load structure.json for dependency/role info
+    modules_by_path: dict[str, dict] = {}
+    hotspot_paths: set[str] = set()
+    if structure_path.exists():
+        try:
+            struct = json.loads(structure_path.read_text(encoding="utf-8"))
+            for m in struct.get("modules", []):
+                modules_by_path[m["path"]] = m
+            for h in struct.get("hotspots", []):
+                hotspot_paths.add(h.get("path", ""))
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Threshold: top 30% of risk scores, minimum score of 10
+    scores = sorted(file_risk.values(), reverse=True)
+    threshold = max(scores[max(len(scores) // 3, 1) - 1] if scores else 10, 10)
+
+    added: list[str] = []
+    for filepath, risk_score in sorted(file_risk.items(), key=lambda x: -x[1]):
+        if risk_score < threshold:
+            continue
+
+        mod_info = modules_by_path.get(filepath, {})
+        deps = mod_info.get("dependencies", [])
+        fan_out = len(deps)
+        is_hotspot = filepath in hotspot_paths
+        n_findings = file_findings_count.get(filepath, 0)
+
+        # Choose pattern: ⑩ if high fan-out (hub), ⑧ if findings suggest drift
+        pattern = "⑩" if fan_out >= 3 or is_hotspot else "⑧"
+
+        # Severity: high risk → medium, moderate → low
+        severity = "medium" if risk_score >= threshold * 2 else "low"
+
+        title = f"構造的脆弱性: {filepath}"
+        fid = generate_id(repo_name, filepath, title)
+
+        description_parts = [
+            f"ストレステストで {n_findings}件の仮想改修が影響。リスクスコア {risk_score}。",
+        ]
+        if fan_out > 0:
+            description_parts.append(f"依存先 {fan_out} モジュール。")
+        if is_hotspot:
+            description_parts.append("構造解析でホットスポット判定。")
+        if mod_info.get("role"):
+            description_parts.append(f"役割: {mod_info['role']}")
+
+        finding = Finding(
+            id=fid,
+            repo=repo_name,
+            file=filepath,
+            type="contradiction",
+            severity=severity,
+            pattern=pattern,
+            title=title,
+            description=" ".join(description_parts),
+            status="found",
+            found_by="stress-test",
+            category="debt",
+            tags=["stress-test", "structural-fragility"],
+        )
+
+        try:
+            add_finding(base_path, finding)
+            added.append(fid)
+        except ValueError:
+            pass  # duplicate — already registered
+
+    return added
+
+
+# ---------------------------------------------------------------------------
+# ROI data loaders (churn / fan_out from existing delta-lint artifacts)
+# ---------------------------------------------------------------------------
+
+def _load_churn_map(base_path: str | Path) -> dict[str, int]:
+    """Load file → change_count map from git history.
+
+    Sources (in priority order):
+    1. .delta-lint/stress-test/structure.json → dev_patterns (has churn evidence)
+    2. Live git log (if repo is a git repo)
+
+    Returns {relative_path: change_count_in_6_months}.
+    """
+    base = Path(base_path)
+    churn: dict[str, int] = {}
+
+    # Try live git log first (most accurate)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "log", "--since=6 months ago", "--name-only", "--pretty=format:"],
+            capture_output=True, text=True, cwd=str(base), timeout=15,
+        )
+        if result.returncode == 0:
+            from collections import Counter
+            files = [
+                line.strip() for line in result.stdout.splitlines()
+                if line.strip() and not line.startswith(" ")
+            ]
+            churn = dict(Counter(files))
+    except Exception:
+        pass
+
+    return churn
+
+
+def _load_fan_out_map(base_path: str | Path) -> dict[str, int]:
+    """Load file → fan_out (被参照数) map.
+
+    Uses grep on require/include/import statements for accurate reference counting.
+    Falls back to structure.json dependencies if grep fails.
+    """
+    import subprocess
+    from collections import Counter
+
+    base = Path(base_path)
+    fan_out: dict[str, int] = {}
+
+    # PHP: grep require/require_once/include/include_once statements
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "--include=*.php",
+             "-E", r"(require|include)(_once)?\s*[\(\s]"],
+            capture_output=True, text=True, cwd=str(base), timeout=15,
+        )
+        if result.returncode <= 1:  # 0=found, 1=not found
+            dep_counts: Counter = Counter()
+            for line in result.stdout.splitlines():
+                # 参照されているファイル名を抽出
+                import re
+                # require_once( __DIR__ . '/foo.php' ) やシンプルな形式に対応
+                m = re.search(r"['\"]([^'\"]+\.php)['\"]", line)
+                if not m:
+                    continue
+                ref_name = m.group(1)
+                # パス末尾のファイル名だけ取得
+                ref_basename = ref_name.split("/")[-1]
+                dep_counts[ref_basename] += 1
+            # basename → full relative path のマッピングを構築
+            all_php = subprocess.run(
+                ["find", ".", "-name", "*.php", "-not", "-path", "*/vendor/*",
+                 "-not", "-path", "*/.delta-lint/*"],
+                capture_output=True, text=True, cwd=str(base), timeout=10,
+            )
+            basename_to_paths: dict[str, list[str]] = {}
+            for p in all_php.stdout.splitlines():
+                p = p.strip().lstrip("./")
+                if p:
+                    bn = p.split("/")[-1]
+                    basename_to_paths.setdefault(bn, []).append(p)
+            # basename のカウントを full path に展開
+            for bn, count in dep_counts.items():
+                for full_path in basename_to_paths.get(bn, []):
+                    fan_out[full_path] = max(fan_out.get(full_path, 0), count)
+    except Exception:
+        pass
+
+    # TS/JS: grep import statements
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "--include=*.ts", "--include=*.js",
+             "-E", r"(import\s|from\s['\"])"],
+            capture_output=True, text=True, cwd=str(base), timeout=15,
+        )
+        if result.returncode <= 1:
+            import re
+            dep_counts_ts: Counter = Counter()
+            for line in result.stdout.splitlines():
+                m = re.search(r"from\s+['\"]([^'\"]+)['\"]", line)
+                if not m:
+                    m = re.search(r"import\s+['\"]([^'\"]+)['\"]", line)
+                if not m:
+                    continue
+                ref = m.group(1).split("/")[-1]
+                # 拡張子を正規化
+                for ext in [".ts", ".js", ""]:
+                    dep_counts_ts[ref + ext] += 1
+            all_ts = subprocess.run(
+                ["find", ".", "-name", "*.ts", "-o", "-name", "*.js"],
+                capture_output=True, text=True, cwd=str(base), timeout=10,
+            )
+            bn_to_paths: dict[str, list[str]] = {}
+            for p in all_ts.stdout.splitlines():
+                p = p.strip().lstrip("./")
+                if p:
+                    bn = p.split("/")[-1]
+                    bn_to_paths.setdefault(bn, []).append(p)
+            for bn, count in dep_counts_ts.items():
+                for full_path in bn_to_paths.get(bn, []):
+                    fan_out[full_path] = max(fan_out.get(full_path, 0), count)
+    except Exception:
+        pass
+
+    # Fallback: structure.json の dependencies も統合（grep で取れなかったもの）
+    structure_path = base / ".delta-lint" / "stress-test" / "structure.json"
+    if structure_path.exists():
+        try:
+            data = json.loads(structure_path.read_text(encoding="utf-8"))
+            modules = data.get("modules", [])
+            struct_counts: Counter = Counter()
+            for mod in modules:
+                for dep in mod.get("dependencies", []):
+                    struct_counts[dep] += 1
+            for path, count in struct_counts.items():
+                if path not in fan_out:
+                    fan_out[path] = count
+        except Exception:
+            pass
+
+    return fan_out
+
+
+# ---------------------------------------------------------------------------
+# Dashboard generation
+# ---------------------------------------------------------------------------
+
+def generate_dashboard(
+    base_path: str | Path,
+    *,
+    scan_progress: dict | None = None,
+    treemap_json: str | None = None,
+) -> Path:
+    """Generate a self-contained HTML dashboard from all findings.
+
+    scan_progress: optional dict with keys:
+        completed (int), total (int), is_complete (bool)
+    When provided and not is_complete, the dashboard includes a progress bar
+    and auto-refresh meta tag so the browser shows live updates.
+    """
+    from string import Template as StrTemplate
+
+    base_path = Path(base_path)
+    findings = list_findings(base_path)
+    stats = get_stats(base_path)
+
+    template_path = Path(__file__).parent / "templates" / "findings_dashboard.html"
+    template = StrTemplate(template_path.read_text(encoding="utf-8"))
+
+    sev_counts = stats.get("by_severity", {})
+    status_counts = stats.get("by_status", {})
+
+    # KPI: 確実バグ = high severity（LLMが確信）or 手動verified
+    # 調査中 = medium/low の未解決 findings
+    resolved_statuses = {"merged", "wontfix", "duplicate", "rejected"}
+    confirmed_bugs = sum(
+        1 for f in findings
+        if f.get("verified") is True
+        or f.get("severity") == "high"
+    )
+    investigating = sum(
+        1 for f in findings
+        if f.get("severity") != "high"
+        and not f.get("verified")
+        and f.get("status", "found") not in resolved_statuses
+    )
+    # ROI合計を技術的負債の指標として使用（active findings のみ）
+    # compute_roi は後で実行するため、ここでは仮計算
+    _tmp_cfg = load_scoring_config(base_path)
+    _churn = _load_churn_map(base_path)
+    _fan = _load_fan_out_map(base_path)
+    debt_count = round(sum(
+        compute_roi(
+            f.get("severity", "low"),
+            _churn.get(_finding_file(f), 0),
+            _fan.get(_finding_file(f), 0),
+            f.get("pattern", ""),
+            _tmp_cfg,
+        )["roi_score"]
+        for f in findings
+        if f.get("status", "found") not in resolved_statuses
+    ), 1)
+
+    # Scan depth
+    scan_depth = compute_scan_depth(base_path)
+
+    # Attach debt_score to each finding for dashboard display
+    scoring_cfg = load_scoring_config(base_path)
+    for f in findings:
+        f["debt_score"] = finding_debt_score(f, scoring_cfg)
+
+    # --- ROI data: churn, fan_out, roi_score ---
+    # Priority: JSONL stored values > live git > 0
+    churn_map = _load_churn_map(base_path)
+    fan_out_map = _load_fan_out_map(base_path)
+    for f in findings:
+        file_a = _finding_file(f)
+        # Use JSONL-stored values if available, otherwise fall back to live git
+        churn_val = f.get("churn_6m") or churn_map.get(file_a, 0)
+        fan_val = f.get("fan_out") or fan_out_map.get(file_a, 0)
+        roi = compute_roi(
+            severity=f.get("severity", "low"),
+            churn_6m=churn_val,
+            fan_out=fan_val,
+            pattern=f.get("pattern", ""),
+            cfg=scoring_cfg,
+        )
+        f["churn"] = roi["churn_6m"]
+        f["churn_6m"] = churn_val  # preserve for info_theory
+        f["fan_out"] = roi["fan_out"]
+        f["total_lines"] = f.get("total_lines", 0)
+        f["roi_score"] = roi["roi_score"]
+
+    # Merge suppress data (approved_by) into findings
+    suppress_lookup: dict[str, dict] = {}
+    try:
+        from suppress import load_suppressions
+        suppressions = load_suppressions(str(base_path))
+        for s in suppressions:
+            suppress_lookup[s.finding_hash] = {
+                "approved_by": s.approved_by,
+                "why": s.why,
+                "why_type": s.why_type,
+                "author": s.author,
+            }
+    except Exception:
+        pass
+
+    # Attach approval info to findings
+    for f in findings:
+        fid = f.get("id", "")
+        if fid in suppress_lookup:
+            f["approved_by"] = suppress_lookup[fid].get("approved_by", "")
+
+    # Count planned debt (suppress + wontfix) and unapproved
+    planned_debt = 0
+    unapproved_count = 0
+    for f in findings:
+        status = f.get("status", "found")
+        if status in ("wontfix", "duplicate"):
+            planned_debt += 1
+            if not f.get("approved_by"):
+                unapproved_count += 1
+    # Also count active suppressions
+    planned_debt += len(suppress_lookup)
+    for s_data in suppress_lookup.values():
+        if not s_data.get("approved_by"):
+            unapproved_count += 1
+
+    debt = compute_debt_summary(findings, scoring_cfg)
+
+    # --- Information-theoretic coverage estimation ---
+    try:
+        from info_theory import compute_coverage_from_history, finding_information_score
+        scan_history = load_scan_history(base_path)
+        coverage = compute_coverage_from_history(scan_history, findings)
+        # Attach info_score to each finding
+        for f in findings:
+            info = finding_information_score(f, scan_history)
+            f["info_score"] = info["info_score"]
+            f["surprise"] = info["surprise"]
+    except Exception:
+        coverage = {
+            "estimated_total": len(findings), "coverage_pct": 100,
+            "unseen_estimate": 0, "ci_lower": len(findings), "ci_upper": len(findings),
+            "discovery_trend": "insufficient_data", "scans": 0,
+        }
+
+    # Build custom scoring badge for dashboard header
+    from scoring import diff_from_defaults
+    diffs = diff_from_defaults(scoring_cfg)
+    if diffs:
+        detail_lines = []
+        for section, changes in diffs.items():
+            for key, (default_val, custom_val) in changes.items():
+                if default_val is not None:
+                    detail_lines.append(f"{section}.{key}: {default_val} → {custom_val}")
+                else:
+                    detail_lines.append(f"{section}.{key}: {custom_val} (新規)")
+        detail_text = "\n".join(detail_lines)
+        custom_badge = (
+            f'<span class="custom-badge" style="position:relative;">'
+            f'カスタム設定あり'
+            f'<span class="custom-detail">{detail_text}</span>'
+            f'</span>'
+        )
+    else:
+        custom_badge = ""
+
+    # Build suppressions list for trade-off tab
+    suppressions_data = []
+    try:
+        from suppress import load_suppressions
+        all_suppressions = load_suppressions(str(base_path))
+        for s in all_suppressions:
+            suppressions_data.append({
+                "id": s.id,
+                "pattern": s.pattern,
+                "files": s.files,
+                "why": s.why,
+                "why_type": s.why_type,
+                "date": s.date,
+                "author": s.author,
+                "approved_by": s.approved_by,
+            })
+    except Exception:
+        pass
+
+    # Relative link to landmine map (from .delta-lint/findings/ to .delta-lint/stress-test/)
+    landmine_map_path = base_path / ".delta-lint" / "stress-test" / "landmine_map.html"
+    landmine_link = "../stress-test/landmine_map.html" if landmine_map_path.exists() else "#"
+
+    # Build progress bar HTML + auto-refresh meta tag for streaming mode
+    is_scanning = scan_progress and not scan_progress.get("is_complete", True)
+    if is_scanning:
+        sp_done = scan_progress.get("completed", 0)
+        sp_total = scan_progress.get("total", 1)
+        sp_pct = round(sp_done / max(sp_total, 1) * 100)
+        progress_meta = '<meta http-equiv="refresh" content="3">'
+        progress_html = (
+            f'<div style="background:#0a7d5a;color:#fff;display:flex;align-items:center;gap:12px;'
+            f'padding:8px 16px;font-size:13px;font-weight:500;shrink:0">'
+            f'<span class="pulse-dot" style="display:inline-block;width:8px;height:8px;'
+            f'border-radius:50%;background:#fff"></span>'
+            f'スキャン中... {sp_done}/{sp_total} クラスタ完了 ({sp_pct}%)'
+            f'<div style="flex:1;height:4px;background:rgba(255,255,255,.25);border-radius:2px;'
+            f'min-width:80px;max-width:200px">'
+            f'<div style="height:100%;width:{sp_pct}%;background:#fff;border-radius:2px;'
+            f'transition:width .3s"></div></div></div>'
+        )
+    else:
+        progress_meta = ""
+        progress_html = ""
+
+    html = template.safe_substitute(
+        total_count=stats["total"],
+        repo_count=len(stats.get("by_repo", {})),
+        confirmed_bugs=confirmed_bugs,
+        investigating=investigating,
+        debt_count=debt_count,
+        merged_count=status_counts.get("merged", 0),
+        scan_count=scan_depth["scan_count"],
+        scan_grade=scan_depth["grade"],
+        scan_total_clusters=scan_depth["total_clusters"],
+        scan_last=scan_depth["last_scan"],
+        active_debt=debt["active_debt"],
+        resolution_rate=debt["resolution_rate"],
+        planned_debt=planned_debt,
+        unapproved_count=unapproved_count,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        custom_scoring_badge=custom_badge,
+        findings_json=json.dumps(findings, ensure_ascii=False),
+        suppressions_json=json.dumps(suppressions_data, ensure_ascii=False),
+        landmine_map_link=landmine_link,
+        progress_meta=progress_meta,
+        progress_html=progress_html,
+        treemap_json=treemap_json if treemap_json else "null",
+        coverage_pct=coverage["coverage_pct"],
+        coverage_estimated=coverage["estimated_total"],
+        coverage_unseen=coverage["unseen_estimate"],
+        coverage_trend=coverage.get("discovery_trend", ""),
+        coverage_ci_lower=coverage.get("ci_lower", 0),
+        coverage_ci_upper=coverage.get("ci_upper", 0),
+        coverage_json=json.dumps(coverage, ensure_ascii=False),
+    )
+
+    out_path = _findings_dir(base_path) / "dashboard.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+    return out_path

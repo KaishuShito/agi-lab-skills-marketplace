@@ -14,14 +14,9 @@ in a proper .html file where editors can lint and highlight them.
 import argparse
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
-from string import Template
 
 from aggregate import aggregate_results, build_treemap_data, FileRisk
-
-
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 _CATEGORY_RULES: list[tuple[str, str]] = [
@@ -118,10 +113,27 @@ def _add_category_labels(node: dict) -> None:
             _add_category_labels(child)
 
 
-def _load_template(name: str = "dashboard.html") -> Template:
-    """Load an HTML template from the templates directory."""
-    path = _TEMPLATE_DIR / name
-    return Template(path.read_text(encoding="utf-8"))
+
+def build_treemap_json(
+    results_path: str,
+    confirmed_bugs: dict[str, list[dict]] | None = None,
+) -> str:
+    """Build treemap JSON string from stress-test results.
+
+    Returns JSON string suitable for passing to generate_dashboard(treemap_json=...).
+    """
+    data = json.loads(Path(results_path).read_text(encoding="utf-8"))
+    results = data.get("results", [])
+    metadata = data.get("metadata", {})
+    n_modifications = metadata.get("n_modifications", len(results))
+    repo_name = metadata.get("repo_name", "repository")
+
+    file_risks = aggregate_results(results, n_modifications, confirmed_bugs)
+    risky_files = {k: v for k, v in file_risks.items() if v.risk_score > 0}
+    treemap_data = build_treemap_data(risky_files, repo_name)
+    _add_category_labels(treemap_data)
+
+    return json.dumps(treemap_data, ensure_ascii=False)
 
 
 def generate_heatmap(
@@ -129,67 +141,32 @@ def generate_heatmap(
     output_path: str,
     confirmed_bugs: dict[str, list[dict]] | None = None,
 ) -> str:
-    """Generate HTML heatmap from stress-test results.
+    """Generate unified dashboard with landmine map from stress-test results.
 
-    Args:
-        results_path: Path to results.json from stress_test.py
-        output_path: Path to write the HTML file
-        confirmed_bugs: Optional map of file_path -> [{issue, repo}]
+    The output_path is kept for backward compatibility but the actual output
+    goes to the unified dashboard at .delta-lint/findings/dashboard.html.
+    A symlink or copy is placed at output_path for callers that expect it there.
 
     Returns:
         Path to the generated HTML file
     """
-    # Load results
-    data = json.loads(Path(results_path).read_text(encoding="utf-8"))
-    metadata = data.get("metadata", {})
-    results = data.get("results", [])
-    n_modifications = metadata.get("n_modifications", len(results))
-    repo_name = metadata.get("repo_name", "repository")
-    timestamp = metadata.get("timestamp", datetime.now().strftime("%Y-%m-%d"))
+    # Build treemap JSON
+    treemap = build_treemap_json(results_path, confirmed_bugs)
 
-    # Aggregate
-    file_risks = aggregate_results(results, n_modifications, confirmed_bugs)
-
-    # Only keep files with risk > 0 for treemap (skip safe files)
-    risky_files = {k: v for k, v in file_risks.items() if v.risk_score > 0}
-
-    # Build treemap data (risky files only)
-    treemap_data = build_treemap_data(risky_files, repo_name)
-
-    # Add human-readable category labels to directory groups
-    _add_category_labels(treemap_data)
-
-    # Stats for header
-    total_findings = sum(len(r.get("findings", [])) for r in results)
-    hit_mods = sum(1 for r in results if r.get("findings"))
-    files_at_risk = sum(1 for r in file_risks.values() if r.risk_score > 0)
-    high_risk_files = sum(1 for r in file_risks.values() if r.risk_score > 0.35)
-
-    # Check if scan is still in progress
-    n_completed = metadata.get("n_completed", len(results))
-    scan_in_progress = n_completed < n_modifications
-
-    # Render template
-    template = _load_template()
-    html = template.safe_substitute(
-        repo_name=repo_name,
-        timestamp=timestamp,
-        n_modifications=n_modifications,
-        n_completed=n_completed,
-        total_findings=total_findings,
-        hit_rate=f"{hit_mods}/{n_modifications}",
-        files_at_risk=files_at_risk,
-        high_risk_files=high_risk_files,
-        scan_in_progress="true" if scan_in_progress else "false",
-        treemap_json=json.dumps(treemap_data, ensure_ascii=False),
-    )
-
+    # Determine repo base path from output_path
+    # output_path is typically .delta-lint/stress-test/landmine_map.html
     out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(html, encoding="utf-8")
+    # Walk up to find .delta-lint parent
+    base_path = out.parent.parent.parent  # repo root (above .delta-lint/)
+    if not (base_path / ".delta-lint").exists():
+        # Fallback: try output_path's grandparent
+        base_path = out.parent.parent
 
-    print(f"Heatmap generated: {out}", file=sys.stderr)
-    return str(out)
+    from findings import generate_dashboard
+    dash_path = generate_dashboard(base_path, treemap_json=treemap)
+
+    print(f"Dashboard generated: {dash_path}", file=sys.stderr)
+    return str(dash_path)
 
 
 # ---------------------------------------------------------------------------

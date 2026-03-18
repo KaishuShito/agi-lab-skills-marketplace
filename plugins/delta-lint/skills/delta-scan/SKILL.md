@@ -2,19 +2,20 @@
 name: delta-scan
 description: >
   Scan for structural contradictions between source code modules. Detects places
-  where one module's assumptions contradict another's behavior. Use when user says
-  "delta scan", "delta-scan", "構造矛盾チェック", "デグレチェック",
-  "suppress finding", "suppress check", "findings", "バグ記録", or similar.
-  NOT a style linter or generic bug finder.
+  where one module's assumptions contradict another's behavior. Auto-initializes
+  on first run (no separate init needed). Use when user says "delta scan",
+  "delta-scan", "delta init", "delta-init", "構造矛盾チェック", "デグレチェック",
+  "地雷マップ作って", "suppress finding", "suppress check", "findings", "バグ記録",
+  or similar. NOT a style linter or generic bug finder.
 compatibility: Python 3.11+, git. macOS/Linux/Windows.
 metadata:
   author: karesansui-u
-  version: 0.3.0
+  version: 0.4.0
 ---
 
 # delta-scan: Structural Contradiction Scanner
 
-Scans changed or specified files for structural contradictions — places where one module's assumptions contradict another module's behavior. Includes auto-triage, findings management, and suppress mechanism.
+Scans changed or specified files for structural contradictions — places where one module's assumptions contradict another module's behavior. Auto-initializes on first run. Includes auto-triage, findings management, and suppress mechanism.
 
 ## Prerequisites
 

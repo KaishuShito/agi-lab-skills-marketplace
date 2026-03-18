@@ -36,6 +36,35 @@ Execution order assumption breaks under specific code paths.
 - **Signal**: Hook/middleware/plugin registration order matters but isn't guaranteed in all paths
 - **Example**: Authentication middleware runs after the route handler in error recovery path
 
+## 4 Technical Debt Patterns
+
+These are NOT bugs — they are structural weaknesses that increase maintenance cost.
+Report them with `"category": "debt"` (contradiction patterns ①-⑥ use `"category": "contradiction"`).
+
+### ⑦ Dead Code / Unreachable Path
+Code that is defined but never called, or guarded by a condition that is always false.
+- **Signal**: Exported function with no import/call site in scope, `if (false)` guard, feature flag permanently off
+- **Example**: Error recovery handler that is registered but the error type is never thrown
+
+### ⑧ Duplication Drift
+Two implementations that were copied from a common origin have diverged — one was updated, the other wasn't.
+- **Signal**: Structurally similar functions where one has improvements (validation, error handling) the other lacks
+- **Example**: `handleCreateUser` and `handleCreateAdmin` share structure, but only one validates email
+
+### ⑨ Interface Mismatch
+Caller and callee disagree on argument types, count, order, or return value semantics.
+- **Signal**: Function called with arguments that don't match its signature, or return value used differently than intended
+- **Example**: Definition is `save(data, options?)` but caller does `save(data, null, callback)` with 3 args
+
+### ⑩ Missing Abstraction
+The same logic pattern appears in 3+ places without shared utility, increasing update risk.
+- **Signal**: Identical condition checks, transformation logic, or error handling repeated across files
+- **Example**: `if (user.role === 'admin') { ... }` with same body in 5 controllers
+
+**Cross-module requirement relaxation for debt patterns**:
+- ⑦ and ⑩ may involve a single location (no second module needed).
+- ⑧ and ⑨ require two locations (like contradiction patterns).
+
 ## Detection Strategy: Scope-Blind Constraint Check
 
 Developers intentionally narrow their scope when making changes — this is rational. They modify function A, verify it works, and move on. They do NOT check whether function B (which handles the same data, follows the same pattern, or shares an implicit contract with A) is still consistent.
@@ -54,6 +83,15 @@ Sibling signals include, but are not limited to:
 - **Parallel handlers**: multiple endpoints/commands/handlers for the same resource or event
 - **Structural similarity**: two functions with near-identical shape but different details (copy-paste origin)
 - **Shared dependency**: two modules importing the same config, constant, or utility
+- **Hook/event connections**: emitter ↔ listener pairs connected via framework mechanisms rather than imports. Examples:
+  - WordPress: `do_action('hook')` ↔ `add_action('hook', ...)`, `apply_filters('hook')` ↔ `add_filter('hook', ...)`
+  - Django: `signal.send()` ↔ `@receiver(signal)` / `signal.connect()`
+  - Rails: `before_action :method` ↔ `def method`
+  - Spring: `@Autowired` / `publishEvent()` ↔ `@EventListener`
+  - Laravel: `Event::dispatch()` ↔ `$listen` array in EventServiceProvider
+  - Event-driven JS: `emit('event')` ↔ `on('event', ...)` / `addEventListener('event', ...)`
+
+  These pairs are **invisible to import analysis** but carry implicit contracts just like direct imports. A filter hook that expects a specific return type, an action hook that assumes certain global state, or a signal handler that expects certain fields on the event — all are sibling relationships.
 
 These are starting points. **Any two pieces of code that share an implicit assumption are siblings**, regardless of whether they match the signals above. When in doubt, include the candidate — false positives are filtered in Phase 2.
 
@@ -81,19 +119,19 @@ This is NOT about finding sloppy code. The inconsistency persists because there 
 
 ## Instructions
 
-1. Analyze the code below for structural contradictions matching the 6 patterns above.
-2. For each contradiction found, report:
-   - **Pattern**: Which of the 6 patterns (①-⑥)
+1. Analyze the code below for structural contradictions (①-⑥) and technical debt (⑦-⑩).
+2. For each finding, report:
+   - **Pattern**: Which pattern (①-⑩)
    - **Severity**: high / medium / low
-   - **Location**: Exact file paths and function/line references for BOTH sides of the contradiction
-   - **Contradiction**: What two things contradict each other (quote the relevant code)
-   - **Impact**: What bug or failure this could cause
-3. Report ALL contradictions you find, regardless of severity.
-4. If genuinely no contradictions are found, respond with exactly: `[]`
+   - **Location**: Exact file paths and function/line references for BOTH sides
+   - **Contradiction**: What is wrong (quote the relevant code)
+   - **Impact**: What bug or failure this causes
+3. Report ALL findings, regardless of severity.
+4. If genuinely nothing found, respond with exactly: `[]`
 
 ## Strictness Rules
 
-**Cross-module requirement**: Both sides of a contradiction MUST involve different functions, classes, or modules. Two code paths within the same function doing things differently is often intentional branching, not a contradiction. However, contradictions between different functions in the same file ARE valid.
+**Cross-module requirement**: Both sides MUST involve different functions, classes, or modules. Two code paths within the same function doing things differently is often intentional branching, not a contradiction. However, contradictions between different functions in the same file ARE valid.
 
 **No test-vs-source contradictions**: Do not report contradictions between test files and source files. Tests may intentionally set up specific conditions. Only report contradictions between production source files.
 
@@ -147,6 +185,7 @@ Respond with a JSON array. Each element:
 ```json
 {
   "pattern": "①",
+  "category": "contradiction",
   "severity": "high",
   "mechanism": "one_sided_evolution",
   "location": {
@@ -161,6 +200,6 @@ Respond with a JSON array. Each element:
 }
 ```
 
-If no contradictions found, respond with: `[]`
+If nothing found, respond with: `[]`
 
 {lang_instruction}

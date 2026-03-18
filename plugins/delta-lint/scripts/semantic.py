@@ -108,7 +108,8 @@ def extract_assumptions(diff_content: str, verbose: bool = False) -> list[dict]:
     prompt = ASSUMPTION_PROMPT.format(diff=diff_content)
 
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        ["claude", "-p"],
+        input=prompt,
         capture_output=True, text=True, timeout=120,
     )
 

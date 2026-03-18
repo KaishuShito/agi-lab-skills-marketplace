@@ -1,4 +1,51 @@
-# Workflow 1: Scan (`/delta-lint` or `/delta-lint scan`)
+# Workflow 1: Scan (`/delta-scan`)
+
+## Step -1: Auto-init (if .delta-lint/ doesn't exist)
+
+```bash
+ls {repo_path}/.delta-lint/stress-test/structure.json 2>/dev/null
+```
+
+If `.delta-lint/` does not exist or structure.json is missing, **auto-initialize before scanning**:
+
+```
+── δ-lint ── 初回セットアップ（自動）
+```
+
+Then run:
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py init --repo "{repo_path}" --verbose 2>&1
+```
+
+This runs: git history analysis → structure analysis → existing scan → findings save → dashboard generation.
+Timeout: 300000 (5 min). **Do NOT ask for confirmation — just run it.**
+
+After init completes, proceed to Step 0 (scan as normal).
+
+If `.delta-lint/` already exists, skip this step entirely.
+
+## Step 0: Detect persona
+
+ユーザーの指示からペルソナを判定する。明示指定がなければ `.delta-lint/config.json` のデフォルトを使う（未設定なら `engineer`）。
+
+**判定ルール:**
+- `--for pm` / 「PM向け」「非エンジニア向け」「わかりやすく」 → `pm`
+- `--for qa` / 「QA向け」「テストケースにして」「テストシナリオで」 → `qa`
+- `--for engineer` / 「技術的に」「エンジニア向け」「詳しく」 → `engineer`
+- `set-persona {pm|qa|engineer}` → デフォルトを変更して終了（スキャンしない）
+
+```bash
+# デフォルト確認（Python ワンライナー）
+cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator import load_default_persona; print(load_default_persona('{repo_path}'))"
+```
+
+**set-persona の場合:**
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator import save_default_persona; save_default_persona('{persona}', '{repo_path}'); print('✓ デフォルトペルソナを {persona} に設定しました')"
+```
+
+判定したペルソナを `{persona}` 変数として以降のステップで使う。
 
 ## Step 1: Determine scope and dry-run
 
@@ -11,14 +58,17 @@ cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}
 
 If no changed files are found, suggest `--files` to specify files manually.
 
-## Step 2: Confirm with user before LLM call
+## Step 2: Auto-proceed (no confirmation needed)
 
-Present the dry-run summary to the user:
-- Number of target files and dependency files
-- Total context size in characters (~4 chars/token)
-- Estimated cost: context_chars / 4 * input_price_per_token
+Show a brief one-line summary and immediately proceed to Step 3:
+- `⏳ N files / Xk chars — scanning...`
 
-**Ask the user to confirm before proceeding.** If context exceeds 60K chars, warn that results may degrade and suggest narrowing with `--files`.
+**Do NOT ask the user to confirm.** delta-scan uses claude -p ($0) so there is no cost concern.
+
+If context exceeds 100K chars, show a warning but still proceed:
+- `⚠ 100K+ chars — results may degrade. Use --files to narrow scope next time.`
+
+Only stop and ask if context exceeds 200K chars (likely an error in scope detection).
 
 ## Step 3: Run the actual scan
 
@@ -106,12 +156,14 @@ finding の条件が現在の設定/コードで実際に発火するか確認:
 全 finding のトリアージ完了後、以下のフォーマットでユーザーに報告:
 
 ```
-🔬 自動トリアージ結果:
+── δ-lint ── スキャン結果
 
   #1 [🔴 LIVE]    ④ Guard Non-Propagation — handler.ts vs validator.ts
      caller: 3箇所, デフォルト設定で再現可能
+     → 放置すると: バリデーション済みと見なされた未検証データがDBに書き込まれる
   #2 [🟡 DORMANT] ② Semantic Mismatch — config.py vs loader.py
      caller: 1箇所, recursive=False を渡した時のみ発火（現在の呼び出し元はすべて True）
+     → 放置すると: recursive=False で呼ばれた場合にネストされた設定が無視される
   #3 [🪦 DEAD]    ① Asymmetric Defaults — old_handler.ts vs utils.ts
      caller: 0箇所（コメントアウト済み）
   #4 [✅ FIXED]   ④ Guard Non-Propagation — auth.go vs middleware.go
@@ -120,8 +172,30 @@ finding の条件が現在の設定/コードで実際に発火するか確認:
 🎯 対応推奨: #1 のみ要対応。#2 は条件付きリスク、#3-#4 は無視可。
 ```
 
+**LIVE/DORMANT の finding には必ず「→ 放置すると:」行を付ける。** finding の `user_impact` フィールドから要約する。これが delta-lint の最大の訴求ポイント — 「コードの問題」ではなく「ユーザーが受ける実害」を伝える。DEAD/FIXED には不要。
+
 **LIVE の finding のみを Step 6 で findings add する。** DEAD/FIXED は記録しない（ノイズ削減）。
 DORMANT は findings add するが `--finding-severity` を1段下げる（high→medium, medium→low）。
+
+## Step 5.7: Persona translation（pm / qa の場合のみ）
+
+**`{persona}` が `pm` または `qa` の場合、トリアージ結果を翻訳して表示する。**
+`engineer` の場合はこのステップをスキップ。
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python -c "
+import json
+from persona_translator import translate
+
+findings = {findings_json}
+result = translate(findings, persona='{persona}', verbose=True)
+print(result)
+"
+```
+
+`{findings_json}` は Step 5.5 のトリアージ完了後の LIVE + DORMANT findings を JSON 配列として渡す。
+
+翻訳結果をユーザーに表示する。engineer 向けのテクニカル出力は**表示しない**（翻訳結果のみ）。
 
 ## Step 6: Record findings and offer next actions
 

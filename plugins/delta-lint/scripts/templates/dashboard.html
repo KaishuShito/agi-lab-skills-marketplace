@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="$html_lang">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>&delta;-lint Landmine Map: $repo_name</title>
+<title>&delta;-lint $lm_page_title: $repo_name</title>
 <script>
   const SCAN_IN_PROGRESS = $scan_in_progress;
   if (SCAN_IN_PROGRESS) {
@@ -21,9 +21,30 @@ body {
   height: 100vh;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto auto 1fr auto;
   grid-template-columns: 1fr 320px;
 }
+
+/* ── Navigation bar ── */
+.delta-nav {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0;
+  background: #0a0c10;
+  border-bottom: 1px solid #1e2430;
+  padding: 0 20px;
+}
+.delta-nav-item {
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b949e;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.delta-nav-item:hover { color: #c9d1d9; }
+.delta-nav-item.active { color: #00d97e; border-bottom-color: #00d97e; }
 
 /* ── Header ── */
 .header {
@@ -540,34 +561,40 @@ body {
 </head>
 <body>
 
+<!-- Navigation bar -->
+<nav class="delta-nav">
+  <a href="#" class="delta-nav-item active">地雷マップ</a>
+  <a href="$findings_dashboard_link" class="delta-nav-item">構造矛盾レポート</a>
+</nav>
+
 <!-- Header -->
 <div class="header">
   <div class="logo">
     <span class="delta">&delta;</span>
-    <span class="title">Landmine Map</span>
+    <span class="title">$lm_header_title</span>
     <span class="repo">$repo_name</span>
   </div>
   <div class="scan-status" id="scan-status"></div>
   <div class="kpi-row">
     <div class="kpi blue">
       <span class="kpi-val">$n_completed<span style="font-size:11px;color:#4a5568">/$n_modifications</span></span>
-      <span class="kpi-label">Scans</span>
+      <span class="kpi-label">$lm_kpi_scans</span>
     </div>
     <div class="kpi amber">
       <span class="kpi-val">$files_at_risk</span>
-      <span class="kpi-label">At Risk</span>
+      <span class="kpi-label">$lm_kpi_at_risk</span>
     </div>
     <div class="kpi red">
       <span class="kpi-val">$high_risk_files</span>
-      <span class="kpi-label">High Risk</span>
+      <span class="kpi-label">$lm_kpi_high_risk</span>
     </div>
     <div class="kpi amber">
       <span class="kpi-val">$total_findings</span>
-      <span class="kpi-label">Findings</span>
+      <span class="kpi-label">$lm_kpi_findings</span>
     </div>
     <div class="kpi green">
       <span class="kpi-val">$hit_rate</span>
-      <span class="kpi-label">Hit Rate</span>
+      <span class="kpi-label">$lm_kpi_hit_rate</span>
     </div>
   </div>
 </div>
@@ -576,7 +603,7 @@ body {
 <div class="center">
   <div id="treemap-wrap"></div>
   <div class="pattern-bar">
-    <div class="pb-title">Patterns</div>
+    <div class="pb-title">$lm_patterns</div>
     <div class="pb-chart" id="pattern-chart"></div>
     <div class="pb-legend" id="pattern-legend"></div>
   </div>
@@ -585,14 +612,14 @@ body {
 <!-- Right panel -->
 <div class="right-panel">
   <div class="panel-tabs">
-    <div class="panel-tab active" data-tab="ranking">Ranking</div>
-    <div class="panel-tab" data-tab="detail">Detail</div>
+    <div class="panel-tab active" data-tab="ranking">$lm_tab_ranking</div>
+    <div class="panel-tab" data-tab="detail">$lm_tab_detail</div>
   </div>
   <div class="panel-scroll">
     <div class="tab-pane active" id="pane-ranking"></div>
     <div class="tab-pane" id="pane-detail">
       <div class="detail-pane" id="detail-content">
-        <p style="color:#4a5568;padding:20px;text-align:center;font-size:11px">Click a file to see details</p>
+        <p style="color:#4a5568;padding:20px;text-align:center;font-size:11px">$lm_click_hint</p>
       </div>
     </div>
   </div>
@@ -604,11 +631,11 @@ body {
 <!-- Footer -->
 <div class="footer">
   <div class="legend-row">
-    <div class="legend-item"><div class="legend-swatch" style="background:#1a2e1a"></div>Safe</div>
-    <div class="legend-item"><div class="legend-swatch" style="background:#2d8a2d"></div>Low</div>
-    <div class="legend-item"><div class="legend-swatch" style="background:#e6a817"></div>Med</div>
-    <div class="legend-item"><div class="legend-swatch" style="background:#e05d44"></div>High</div>
-    <div class="legend-item"><div class="legend-swatch" style="background:#cc0033"></div>Critical</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#1a2e1a"></div>$lm_leg_safe</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#2d8a2d"></div>$lm_leg_low</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#e6a817"></div>$lm_leg_med</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#e05d44"></div>$lm_leg_high</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:#cc0033"></div>$lm_leg_critical</div>
   </div>
   <span class="brand">&delta;-lint &middot; $timestamp</span>
 </div>
@@ -688,16 +715,16 @@ function renderTreemap() {
     if (w > 36 && h > 28 && (d.hit_count||0) > 0) {
       const hits = document.createElement('div');
       hits.className = 'tm-hits';
-      hits.textContent = (d.hit_count||0) + ' hits';
+      hits.textContent = (d.hit_count||0) + ' $lm_hits_suffix';
       el.appendChild(hits);
     }
 
     el.addEventListener('mouseenter', e => {
       tooltip.innerHTML = '<div class="tt-path">' + (d.full_path||d.name) + '</div>'
-        + '<div class="tt-row"><span class="tt-k">Risk</span><span class="tt-v">' + (d.risk_score||0).toFixed(3) + '</span></div>'
-        + '<div class="tt-row"><span class="tt-k">Hits</span><span class="tt-v">' + (d.hit_count||0) + '</span></div>'
-        + '<div class="tt-row"><span class="tt-k">Severity</span><span class="tt-v">' + (d.max_severity||'none') + '</span></div>'
-        + '<div class="tt-row"><span class="tt-k">Findings</span><span class="tt-v">' + (d.findings_count||0) + '</span></div>';
+        + '<div class="tt-row"><span class="tt-k">$lm_tt_risk</span><span class="tt-v">' + (d.risk_score||0).toFixed(3) + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">$lm_tt_hits</span><span class="tt-v">' + (d.hit_count||0) + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">$lm_tt_severity</span><span class="tt-v">' + (d.max_severity||'none') + '</span></div>'
+        + '<div class="tt-row"><span class="tt-k">$lm_tt_findings</span><span class="tt-v">' + (d.findings_count||0) + '</span></div>';
       tooltip.style.display = 'block';
     });
     el.addEventListener('mousemove', e => {
@@ -720,9 +747,9 @@ try { (function buildPatternChart() {
     '\u2463': '#00d97e', '\u2464': '#a855f7', '\u2465': '#f472b6',
   };
   const patternNames = {
-    '\u2460': 'Asymmetric Defaults', '\u2461': 'Semantic Mismatch',
-    '\u2462': 'Spec Divergence', '\u2463': 'Guard Non-Propagation',
-    '\u2464': 'Paired-Setting Override', '\u2465': 'Lifecycle Ordering',
+    '\u2460': '$lm_pat_1', '\u2461': '$lm_pat_2',
+    '\u2462': '$lm_pat_3', '\u2463': '$lm_pat_4',
+    '\u2464': '$lm_pat_5', '\u2465': '$lm_pat_6',
   };
   const counts = {};
   allFiles.forEach(d => {
@@ -738,7 +765,7 @@ try { (function buildPatternChart() {
   const total = entries.reduce((s,e) => s + e[1], 0) || 1;
 
   if (entries.length === 0) {
-    chart.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;color:#2d3748;font-size:10px">No pattern data</div>';
+    chart.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;color:#2d3748;font-size:10px">$lm_no_pattern</div>';
     return;
   }
 
@@ -786,7 +813,7 @@ function fileCategory(path) { return _catMap[path] || ''; }
 function buildRanking() {
   const ranked = allFiles.filter(d => (d.risk_score||0) > 0);
   if (!ranked.length) {
-    paneRanking.innerHTML = '<div style="padding:20px;color:#4a5568;text-align:center;font-size:11px">No files at risk</div>';
+    paneRanking.innerHTML = '<div style="padding:20px;color:#4a5568;text-align:center;font-size:11px">$lm_no_risk</div>';
     return;
   }
   let html = '';
@@ -808,7 +835,7 @@ function buildRanking() {
       + '<div class="rank-meta">'
       + '<span class="rank-badge ' + sc + '">' + score.toFixed(3) + '</span>'
       + (cat ? '<span class="rank-cat">' + cat + '</span>' : '')
-      + '<span>' + (d.hit_count||0) + ' hits</span>'
+      + '<span>' + (d.hit_count||0) + ' $lm_hits_suffix</span>'
       + '</div></div>'
       + '<div class="rank-bar-wrap"><div class="rank-bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>'
       + '</div>';
@@ -861,27 +888,27 @@ window.selectFile = selectFile;
 // ── Detail view ──
 function showDetail(d) {
   switchToDetail();
-  let html = '<button class="detail-back" id="detail-back-btn">Back</button>';
+  let html = '<button class="detail-back" id="detail-back-btn">$lm_back</button>';
   const fp = d.full_path || d.name;
   const detailCat = fileCategory(fp);
   html += '<div class="detail-path">' + fp + '</div>';
   if (detailCat) html += '<div style="margin-bottom:8px"><span class="rank-cat" style="font-size:10px;padding:2px 8px">' + detailCat + '</span></div>';
   html += '<div class="detail-stats">';
-  html += '<div class="detail-chip">Risk <b>' + (d.risk_score||0).toFixed(3) + '</b></div>';
-  html += '<div class="detail-chip">Hits <b>' + (d.hit_count||0) + '</b></div>';
-  html += '<div class="detail-chip">Severity <b>' + (d.max_severity||'none') + '</b></div>';
-  html += '<div class="detail-chip">Findings <b>' + (d.findings_count||0) + '</b></div>';
+  html += '<div class="detail-chip">$lm_tt_risk <b>' + (d.risk_score||0).toFixed(3) + '</b></div>';
+  html += '<div class="detail-chip">$lm_tt_hits <b>' + (d.hit_count||0) + '</b></div>';
+  html += '<div class="detail-chip">$lm_tt_severity <b>' + (d.max_severity||'none') + '</b></div>';
+  html += '<div class="detail-chip">$lm_tt_findings <b>' + (d.findings_count||0) + '</b></div>';
   html += '</div>';
 
   if (d.confirmed_bugs && d.confirmed_bugs.length > 0) {
     d.confirmed_bugs.forEach(b => {
-      html += '<div class="bug-badge">Confirmed: ' + (b.issue||'') + ' (' + (b.repo||'') + ')</div> ';
+      html += '<div class="bug-badge">$lm_confirmed: ' + (b.issue||'') + ' (' + (b.repo||'') + ')</div> ';
     });
   }
 
   if (d.patterns && d.patterns.length > 0) {
     const uniq = [...new Set(d.patterns)];
-    html += '<div class="detail-section-title">Detected Patterns</div>';
+    html += '<div class="detail-section-title">$lm_detected_patterns</div>';
     html += '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">';
     uniq.forEach(p => {
       html += '<span style="font-size:10px;padding:2px 6px;background:#161922;border:1px solid #1e2430;border-radius:3px;color:#ffa502">' + p + '</span>';
@@ -891,7 +918,7 @@ function showDetail(d) {
 
   const findings = d.findings_sample || [];
   if (findings.length > 0) {
-    html += '<div class="detail-section-title">Findings</div>';
+    html += '<div class="detail-section-title">$lm_findings_title</div>';
     findings.forEach(f => {
       const sev = f.severity || 'low';
       html += '<div class="finding-card">';
@@ -908,7 +935,7 @@ function showDetail(d) {
       // User impact
       const impact = f.user_impact || '';
       if (impact) {
-        html += '<div class="fc-impact"><div class="fc-impact-label">User Impact</div>' + impact + '</div>';
+        html += '<div class="fc-impact"><div class="fc-impact-label">$lm_user_impact</div>' + impact + '</div>';
       }
 
       // Location details
@@ -922,16 +949,16 @@ function showDetail(d) {
 
       // Trigger
       if (f.modification_desc) {
-        html += '<div class="fc-trigger">Triggered by: ' + f.modification_desc + '</div>';
+        html += '<div class="fc-trigger">$lm_triggered_by ' + f.modification_desc + '</div>';
       }
       html += '</div>';
     });
 
     if ((d.findings_count||0) > findings.length) {
-      html += '<div class="more-findings">Showing ' + findings.length + ' of ' + d.findings_count + ' findings</div>';
+      html += '<div class="more-findings">' + d.findings_count + ' $lm_of_total ' + findings.length + ' $lm_shown</div>';
     }
   } else {
-    html += '<p style="color:#4a5568;margin-top:16px;font-size:11px">No findings for this file.</p>';
+    html += '<p style="color:#4a5568;margin-top:16px;font-size:11px">$lm_no_findings</p>';
   }
 
   detailContent.innerHTML = html;
@@ -945,10 +972,10 @@ function showDetail(d) {
 (function() {
   const el = document.getElementById('scan-status');
   if (SCAN_IN_PROGRESS) {
-    el.innerHTML = '<div class="scan-pulse"></div>Scanning… auto-refreshing every 10s';
+    el.innerHTML = '<div class="scan-pulse"></div>$lm_scanning';
   } else {
     el.classList.add('done');
-    el.textContent = '✓ Scan complete';
+    el.textContent = '$lm_scan_done';
   }
 })();
 </script>

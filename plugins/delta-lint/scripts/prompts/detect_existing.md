@@ -28,6 +28,30 @@ Two settings or configurations that appear independent secretly interfere with e
 Execution order assumption breaks under specific code paths.
 - **Signal**: Hook/middleware/plugin registration order matters but isn't guaranteed in all paths
 
+## 4 Technical Debt Patterns
+
+These are NOT bugs — they are structural weaknesses that increase maintenance cost.
+Report them with `"category": "debt"` (contradiction patterns ①-⑥ use `"category": "contradiction"`).
+
+### ⑦ Dead Code / Unreachable Path
+Code that is defined but never called, or guarded by a condition that is always false.
+- **Signal**: Exported function with no import/call site in scope, `if (false)` guard, feature flag permanently off
+
+### ⑧ Duplication Drift
+Two implementations that were copied from a common origin have diverged — one was updated, the other wasn't.
+- **Signal**: Structurally similar functions where one has improvements (validation, error handling) the other lacks
+
+### ⑨ Interface Mismatch
+Caller and callee disagree on argument types, count, order, or return value semantics.
+- **Signal**: Function called with arguments that don't match its signature, or return value used differently than intended
+
+### ⑩ Missing Abstraction
+The same logic pattern appears in 3+ places without shared utility, increasing update risk.
+- **Signal**: Identical condition checks, transformation logic, or error handling repeated across files
+
+**Cross-module requirement relaxation for debt patterns**:
+- ⑦ and ⑩ may involve a single location. ⑧ and ⑨ require two locations.
+
 ## Detection Strategy: Scope-Blind Constraint Check
 
 Developers intentionally narrow their scope when making changes — this is rational. They modify function A, verify it works, and move on. They do NOT check whether function B (which handles the same data, follows the same pattern, or shares an implicit contract with A) is still consistent.
@@ -46,6 +70,15 @@ Sibling signals include, but are not limited to:
 - **Parallel handlers**: multiple endpoints/commands/handlers for the same resource or event
 - **Structural similarity**: two functions with near-identical shape but different details (copy-paste origin)
 - **Shared dependency**: two modules importing the same config, constant, or utility
+- **Hook/event connections**: emitter ↔ listener pairs connected via framework mechanisms rather than imports. Examples:
+  - WordPress: `do_action('hook')` ↔ `add_action('hook', ...)`, `apply_filters('hook')` ↔ `add_filter('hook', ...)`
+  - Django: `signal.send()` ↔ `@receiver(signal)` / `signal.connect()`
+  - Rails: `before_action :method` ↔ `def method`
+  - Spring: `@Autowired` / `publishEvent()` ↔ `@EventListener`
+  - Laravel: `Event::dispatch()` ↔ `$listen` array in EventServiceProvider
+  - Event-driven JS: `emit('event')` ↔ `on('event', ...)` / `addEventListener('event', ...)`
+
+  These pairs are **invisible to import analysis** but carry implicit contracts just like direct imports. A filter hook that expects a specific return type, an action hook that assumes certain global state, or a signal handler that expects certain fields on the event — all are sibling relationships.
 
 These are starting points. **Any two pieces of code that share an implicit assumption are siblings**, regardless of whether they match the signals above. When in doubt, include the candidate — false positives are filtered in Phase 2.
 
@@ -73,7 +106,7 @@ This is NOT about finding sloppy code. The inconsistency persists because there 
 
 ## Instructions
 
-1. Analyze the code below for structural contradictions matching the 6 patterns above.
+1. Analyze the code below for structural contradictions (①-⑥) and technical debt (⑦-⑩).
 2. For each contradiction found, classify it and report concrete user impact.
 3. Report ALL contradictions you find, regardless of severity.
 4. If genuinely no contradictions are found, respond with exactly: `[]`
@@ -163,6 +196,7 @@ Respond with a JSON array. Each element:
 ```json
 {
   "pattern": "①",
+  "category": "contradiction",
   "severity": "high",
   "bug_class": "🔴 実バグ",
   "mechanism": "one_sided_evolution",
