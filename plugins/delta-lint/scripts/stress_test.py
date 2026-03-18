@@ -1368,10 +1368,10 @@ def run_stress_test(
         print(f"  Saved: {structure_path}", file=sys.stderr)
 
     # Step 0.5: Scan existing contradictions in hotspot clusters
-    existing_results = scan_existing(
+    existing_results = list(scan_existing(
         structure, repo_path,
         backend=backend, verbose=verbose, parallel=parallel, lang=lang,
-    )
+    ))
     existing_findings_path = out / "existing_findings.json"
     existing_data = {
         "metadata": {
