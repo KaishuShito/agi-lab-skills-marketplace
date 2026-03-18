@@ -10,11 +10,13 @@ Look for these specific patterns:
 Input path and output path handle the same value differently.
 - **Signal**: Default values, type coercion, or encoding differ between write and read paths
 - **Example**: Registration accepts `null` but display renders `undefined` as empty string
+- **Example**: Test asserts old default value, but implementation has been updated to a new default
 
 ### ② Semantic Mismatch
 Same API name, variable, or concept means different things in different modules.
 - **Signal**: A shared name (status, type, code) is used with different semantics across modules
 - **Example**: `status: 0` means "pending" in module A but "inactive" in module B
+- **Example**: Test expects `getUser()` to return `null` for missing user, but implementation now throws `NotFoundError`
 
 ### ③ External Spec Divergence
 Implementation contradicts the external specification it claims to follow (HTTP/RFC/language spec/library docs).
@@ -25,6 +27,7 @@ Implementation contradicts the external specification it claims to follow (HTTP/
 Error handling or validation is present in one path but missing in a parallel path.
 - **Signal**: A check exists in function A but is absent in function B, which handles the same data
 - **Example**: Input validation in the create endpoint but not in the update endpoint
+- **Example**: Error handling convention adopted in new modules but not retrofitted to older parallel modules
 
 ### ⑤ Paired-Setting Override
 Two settings or configurations that appear independent secretly interfere with each other.
@@ -38,7 +41,7 @@ Execution order assumption breaks under specific code paths.
 
 ## 4 Technical Debt Patterns
 
-These are NOT bugs — they are structural weaknesses that increase maintenance cost.
+Structural weaknesses that increase maintenance cost.
 Report them with `"category": "debt"` (contradiction patterns ①-⑥ use `"category": "contradiction"`).
 
 ### ⑦ Dead Code / Unreachable Path
@@ -50,6 +53,7 @@ Code that is defined but never called, or guarded by a condition that is always 
 Two implementations that were copied from a common origin have diverged — one was updated, the other wasn't.
 - **Signal**: Structurally similar functions where one has improvements (validation, error handling) the other lacks
 - **Example**: `handleCreateUser` and `handleCreateAdmin` share structure, but only one validates email
+- **Example**: Logging format updated to structured JSON in service A, but service B still uses plaintext format from the same template
 
 ### ⑨ Interface Mismatch
 Caller and callee disagree on argument types, count, order, or return value semantics.
@@ -153,6 +157,7 @@ Do not report:
 - Different behavior for different code paths that handle different concerns
 - Defensive coding patterns (extra checks that are technically redundant)
 - Configuration defaults that differ between modules by design
+- Class-scoped constants/properties with the same name but different values in different classes (each class owns its own scope — e.g., `const LOG_PREFIX` in ClassA vs ClassB is not a conflict)
 
 ## Internal Evidence (CRITICAL — include when available)
 

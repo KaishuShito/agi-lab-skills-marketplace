@@ -7,47 +7,61 @@ A structural contradiction occurs when two parts of the code make incompatible p
 ### ① Asymmetric Defaults
 Input path and output path handle the same value differently.
 - **Signal**: Default values, type coercion, or encoding differ between write and read paths
+- **Example**: Registration accepts `null` but display renders `undefined` as empty string
+- **Example**: Test asserts old default value, but implementation has been updated to a new default
 
 ### ② Semantic Mismatch
 Same API name, variable, or concept means different things in different modules.
 - **Signal**: A shared name (status, type, code) is used with different semantics across modules
+- **Example**: `status: 0` means "pending" in module A but "inactive" in module B
+- **Example**: Test expects `getUser()` to return `null` for missing user, but implementation now throws `NotFoundError`
 
 ### ③ External Spec Divergence
 Implementation contradicts the external specification it claims to follow (HTTP/RFC/language spec/library docs).
 - **Signal**: Comments reference a spec but the code deviates from it
+- **Example**: HTTP header handling that violates RFC 7230 parsing rules
 
 ### ④ Guard Non-Propagation
 Error handling or validation is present in one path but missing in a parallel path.
 - **Signal**: A check exists in function A but is absent in function B, which handles the same data
+- **Example**: Input validation in the create endpoint but not in the update endpoint
+- **Example**: Error handling convention adopted in new modules but not retrofitted to older parallel modules
 
 ### ⑤ Paired-Setting Override
 Two settings or configurations that appear independent secretly interfere with each other.
 - **Signal**: Changing one config value invalidates assumptions of another
+- **Example**: Setting `timeout=30s` while `retries=5` makes total wait exceed the upstream's patience
 
 ### ⑥ Lifecycle Ordering
 Execution order assumption breaks under specific code paths.
 - **Signal**: Hook/middleware/plugin registration order matters but isn't guaranteed in all paths
+- **Example**: Authentication middleware runs after the route handler in error recovery path
 
 ## 4 Technical Debt Patterns
 
-These are NOT bugs — they are structural weaknesses that increase maintenance cost.
+Structural weaknesses that increase maintenance cost.
 Report them with `"category": "debt"` (contradiction patterns ①-⑥ use `"category": "contradiction"`).
 
 ### ⑦ Dead Code / Unreachable Path
 Code that is defined but never called, or guarded by a condition that is always false.
 - **Signal**: Exported function with no import/call site in scope, `if (false)` guard, feature flag permanently off
+- **Example**: Error recovery handler that is registered but the error type is never thrown
 
 ### ⑧ Duplication Drift
 Two implementations that were copied from a common origin have diverged — one was updated, the other wasn't.
 - **Signal**: Structurally similar functions where one has improvements (validation, error handling) the other lacks
+- **Example**: `handleCreateUser` and `handleCreateAdmin` share structure, but only one validates email
+- **Example**: Logging format updated to structured JSON in service A, but service B still uses plaintext format from the same template
 
 ### ⑨ Interface Mismatch
 Caller and callee disagree on argument types, count, order, or return value semantics.
 - **Signal**: Function called with arguments that don't match its signature, or return value used differently than intended
+- **Example**: Definition is `save(data, options?)` but caller does `save(data, null, callback)` with 3 args
 
 ### ⑩ Missing Abstraction
 The same logic pattern appears in 3+ places without shared utility, increasing update risk.
 - **Signal**: Identical condition checks, transformation logic, or error handling repeated across files
+- **Example**: `if (user.role === 'admin') { ... }` with same body in 5 controllers
 
 **Cross-module requirement relaxation for debt patterns**:
 - ⑦ and ⑩ may involve a single location. ⑧ and ⑨ require two locations.
@@ -169,6 +183,7 @@ Do not report:
 - Different behavior for different code paths that handle different concerns
 - Defensive coding patterns
 - Configuration defaults that differ between modules by design
+- Class-scoped constants/properties with the same name but different values in different classes (each class owns its own scope — e.g., `const LOG_PREFIX` in ClassA vs ClassB is not a conflict)
 
 ## Internal Evidence (CRITICAL — include when available)
 

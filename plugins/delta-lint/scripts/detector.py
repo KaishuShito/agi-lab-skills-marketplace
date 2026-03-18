@@ -46,18 +46,44 @@ LANG_INSTRUCTIONS = {
 }
 
 
-def load_system_prompt(lang: str = "en") -> str:
-    """Load the detection system prompt from prompts/detect.md."""
+def load_system_prompt(lang: str = "en", repo_path: str = "",
+                       prompt_append: str = "") -> str:
+    """Load the detection system prompt.
+
+    Resolution order:
+    1. .delta-lint/detect.md (team override — full control, replaces core)
+    2. Built-in prompts/detect.md (default)
+
+    If prompt_append is provided (from policy.prompt_append), it is appended
+    to whichever prompt is loaded. This allows teams to add instructions
+    without replacing the entire prompt.
+    """
+    # Check for team override
+    if repo_path:
+        override_path = Path(repo_path) / ".delta-lint" / "detect.md"
+        if override_path.exists():
+            prompt = override_path.read_text(encoding="utf-8")
+            lang_instruction = LANG_INSTRUCTIONS.get(lang, "")
+            prompt = prompt.replace("{lang_instruction}", lang_instruction)
+            if prompt_append:
+                prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
+            return prompt
+
+    # Default: built-in prompt
     prompt_path = PROMPT_DIR / "detect.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     lang_instruction = LANG_INSTRUCTIONS.get(lang, "")
-    return prompt.replace("{lang_instruction}", lang_instruction)
+    prompt = prompt.replace("{lang_instruction}", lang_instruction)
+    if prompt_append:
+        prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
+    return prompt
 
 
 def build_user_prompt(context: ModuleContext, repo_name: str = "",
                       constraints: list[dict] | None = None,
                       architecture: list[str] | None = None,
-                      diff_text: str = "") -> str:
+                      diff_text: str = "",
+                      project_rules: list[str] | None = None) -> str:
     """Build the user prompt with code context.
 
     Args:
@@ -71,6 +97,9 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "",
             team policy. These describe intentional design decisions that
             should NOT be flagged as contradictions.
         diff_text: Optional git diff output showing exactly which lines changed.
+        project_rules: Optional list of project-specific rules that describe
+            domain knowledge, naming conventions, or design patterns that
+            should NOT be flagged as contradictions.
     """
     header = "Analyze the following source code files for structural contradictions.\n"
     if repo_name:
@@ -121,6 +150,17 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "",
                 for item in items:
                     prompt += f"- {item}\n"
                 prompt += "\n"
+
+    # Inject project-specific rules (domain knowledge — reduces false positives)
+    if project_rules:
+        prompt += "\n\n## Project Rules (domain knowledge)\n\n"
+        prompt += (
+            "The following are project-specific facts about this codebase. "
+            "Do NOT flag these as contradictions — they reflect domain knowledge "
+            "that is not obvious from the code alone.\n\n"
+        )
+        for rule in project_rules:
+            prompt += f"- {rule}\n"
 
     return prompt
 
@@ -246,7 +286,11 @@ def detect(context: ModuleContext, repo_name: str = "",
            lang: str = "en",
            constraints: list[dict] | None = None,
            architecture: list[str] | None = None,
-           diff_text: str = "") -> list[dict]:
+           diff_text: str = "",
+           project_rules: list[str] | None = None,
+           repo_path: str = "",
+           prompt_append: str = "",
+           disabled_patterns: list[str] | None = None) -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
@@ -258,14 +302,20 @@ def detect(context: ModuleContext, repo_name: str = "",
         constraints: Optional implicit constraints from structure.json
         architecture: Optional architectural context from team policy
         diff_text: Optional git diff output for change-aware detection
+        project_rules: Optional project-specific domain rules
+        repo_path: Optional repo path for loading team prompt override
+        prompt_append: Optional text appended to system prompt (from policy)
+        disabled_patterns: Optional list of pattern IDs to skip (e.g. ["⑦", "⑩"])
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
     """
-    system_prompt = load_system_prompt(lang=lang)
+    system_prompt = load_system_prompt(lang=lang, repo_path=repo_path,
+                                       prompt_append=prompt_append)
     user_prompt = build_user_prompt(context, repo_name, constraints=constraints,
                                     architecture=architecture,
-                                    diff_text=diff_text)
+                                    diff_text=diff_text,
+                                    project_rules=project_rules)
 
     if backend == "cli" and not _cli_available():
         backend = "api"
@@ -282,7 +332,14 @@ def detect(context: ModuleContext, repo_name: str = "",
             "'claude' CLI is on PATH."
         )
 
-    return _parse_response(raw)
+    findings = _parse_response(raw)
+
+    # Filter out disabled patterns
+    if disabled_patterns:
+        disabled = set(disabled_patterns)
+        findings = [f for f in findings if f.get("pattern", "") not in disabled]
+
+    return findings
 
 
 def _cli_available() -> bool:

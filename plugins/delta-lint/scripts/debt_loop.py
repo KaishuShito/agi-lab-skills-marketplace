@@ -86,13 +86,14 @@ def score_finding(f: dict, scan_history: list[dict] | None = None) -> float:
                 churn_6m=f.get("churn_6m", 0),
                 fan_out=f.get("fan_out", 0),
                 pattern=f.get("pattern", ""),
+                fix_churn_6m=f.get("fix_churn_6m"),
             )
             roi = roi_data["roi_score"]
             f["roi_score"] = roi
         except Exception:
             roi = 0
 
-    sev_bonus = {"high": 3, "medium": 1, "low": 0}.get(f.get("severity", "low"), 0)
+    sev_bonus = {"high": 300, "medium": 100, "low": 0}.get(f.get("severity", "low"), 0)
 
     return info_score + (roi or 0) + sev_bonus
 

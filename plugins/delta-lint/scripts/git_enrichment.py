@@ -53,6 +53,50 @@ def git_churn_map(repo_path: str, months: int = 6) -> dict[str, int]:
         return {}
 
 
+# Pattern for fix-related commit messages (English + Japanese)
+_FIX_PATTERN = re.compile(
+    r"fix|bug|hotfix|修正|不具合|バグ|FB修正",
+    re.IGNORECASE,
+)
+
+
+def git_fix_churn_map(repo_path: str, months: int = 6) -> dict[str, int]:
+    """Compute file → fix_commit_count for fix-related commits only.
+
+    Filters commits whose message matches fix/bug/修正/不具合 patterns.
+    More accurate signal for "this file breaks often" than total churn.
+
+    Returns:
+        {relative_path: number_of_fix_commits_touching_file}
+    """
+    # Use --format with a unique separator to split commits
+    SEP = "---COMMIT_SEP---"
+    try:
+        result = subprocess.run(
+            ["git", "log", f"--since={months} months ago",
+             "--name-only", f"--pretty=format:{SEP}%s", "--diff-filter=ACMR"],
+            capture_output=True, text=True,
+            cwd=repo_path, timeout=30,
+        )
+        if result.returncode != 0:
+            return {}
+
+        fix_files: list[str] = []
+        chunks = result.stdout.split(SEP)
+        for chunk in chunks:
+            lines = [l.strip() for l in chunk.splitlines() if l.strip()]
+            if not lines:
+                continue
+            subject = lines[0]
+            files = lines[1:]
+            if _FIX_PATTERN.search(subject):
+                fix_files.extend(files)
+
+        return dict(Counter(fix_files))
+    except Exception:
+        return {}
+
+
 def git_churn_file(repo_path: str, file_path: str, months: int = 6) -> int:
     """Get commit count for a single file."""
     try:
@@ -217,24 +261,44 @@ def enrich_finding(finding: dict, repo_path: str) -> dict:
 
 def enrich_findings_batch(findings: list[dict], repo_path: str,
                           verbose: bool = False) -> list[dict]:
-    """Enrich multiple findings efficiently using batch maps.
+    """Enrich multiple findings efficiently.
 
-    Computes churn_map and fan_out_map once, then applies to all findings.
-    Much faster than calling enrich_finding() per-finding for large batches.
+    Churn uses a batch map (single git log call — fast for any repo size).
+    Fan-out uses per-finding git grep (avoids full-repo fan_out_map which
+    times out on large repos with many tracked files).
     """
     import sys
 
     if verbose:
         print("  Computing git churn map...", file=sys.stderr)
     churn_map = git_churn_map(repo_path)
+    fix_churn_map = git_fix_churn_map(repo_path)
 
     if verbose:
-        print(f"  Churn data: {len(churn_map)} files tracked", file=sys.stderr)
-        print("  Computing fan-out map...", file=sys.stderr)
-    fan_map = git_fan_out_map(repo_path)
+        print(f"  Churn data: {len(churn_map)} files tracked "
+              f"({len(fix_churn_map)} with fix commits)", file=sys.stderr)
+
+    # Collect unique file paths from findings for targeted fan-out lookup
+    file_paths: set[str] = set()
+    for f in findings:
+        loc = f.get("location", {})
+        fa = loc.get("file_a", f.get("file", ""))
+        fb = loc.get("file_b", "")
+        if fa:
+            file_paths.add(fa)
+        if fb:
+            file_paths.add(fb)
 
     if verbose:
-        print(f"  Fan-out data: {len(fan_map)} files with references", file=sys.stderr)
+        print(f"  Computing fan-out for {len(file_paths)} unique files...", file=sys.stderr)
+
+    # Per-file fan-out (only for files referenced by findings)
+    fan_cache: dict[str, int] = {}
+    for fp in file_paths:
+        fan_cache[fp] = git_fan_out_file(repo_path, fp)
+
+    if verbose:
+        print(f"  Fan-out computed for {len(fan_cache)} files", file=sys.stderr)
 
     for f in findings:
         loc = f.get("location", {})
@@ -250,10 +314,16 @@ def enrich_findings_batch(findings: list[dict], repo_path: str,
             churn_b = churn_map.get(file_b, 0) if file_b else 0
             f["churn_6m"] = max(churn_a, churn_b)
 
-        # Fan-out: use batch map, max of both files
+        # Fix churn: bug-fix commits only (more accurate for ROI)
+        if not f.get("fix_churn_6m"):
+            fix_a = fix_churn_map.get(file_a, 0)
+            fix_b = fix_churn_map.get(file_b, 0) if file_b else 0
+            f["fix_churn_6m"] = max(fix_a, fix_b)
+
+        # Fan-out: use per-file cache, max of both files
         if not f.get("fan_out"):
-            fan_a = fan_map.get(file_a, 0)
-            fan_b = fan_map.get(file_b, 0) if file_b else 0
+            fan_a = fan_cache.get(file_a, 0)
+            fan_b = fan_cache.get(file_b, 0) if file_b else 0
             f["fan_out"] = max(fan_a, fan_b)
 
         # Total lines

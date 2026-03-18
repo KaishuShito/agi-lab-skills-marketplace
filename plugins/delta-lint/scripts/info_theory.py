@@ -22,7 +22,7 @@ from typing import Any
 # 初期値は delta-lint の 129件分析データから推定。
 DEFAULT_PATTERN_RATE: dict[str, float] = {
     "①": 0.15,   # Asymmetric Defaults — 中頻度
-    "②": 0.25,   # One-sided Evolution — 最頻出
+    "②": 0.25,   # Semantic Mismatch — 最頻出
     "③": 0.08,   # Silent Fallback Divergence — 稀
     "④": 0.30,   # Guard Non-Propagation — 最頻出
     "⑤": 0.10,   # Paired-Setting Override
@@ -217,7 +217,12 @@ def information_score(
 ) -> float:
     """情報理論ベースの finding スコア。
 
-    score = surprise × (1 + entropy) × log₂(1 + fan_out) / fix_cost
+    score = surprise × (1 + entropy) × log₂(1 + fan_out) / fix_cost × INFO_SCALE
+
+    出力レンジ: 0 〜 数千。
+    典型例:
+      稀パターン + 高変動 + 5 fan_out + 安い修正  → ~900
+      頻出パターン + 安定 + 1 fan_out + 高コスト  → ~5
 
     負債の情報理論.md との対応:
     - surprise     → 自己情報量 -log₂ P(failure)
@@ -229,9 +234,11 @@ def information_score(
     - severity を連続的な確率ベースに（high/medium/low ラベルではなく）
     - fan_out に対数スケール適用（10→100 より 0→10 の方が影響大）
     """
+    from scoring import INFO_SCALE
+
     channel_weight = math.log2(1 + max(fan_out, 1))
     raw = severity_surprise * (1 + churn_entropy) * channel_weight / max(fix_cost, 0.1)
-    return round(raw, 2)
+    return round(raw * INFO_SCALE, 1)
 
 
 # ---------------------------------------------------------------------------

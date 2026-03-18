@@ -105,7 +105,7 @@ tailwind.config = {
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
       <div class="text-2xl font-bold text-pat">$debt_count</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">技術的負債</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">バグではないが改善すべき</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">構造的に改善すべき</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
       <div class="text-2xl font-bold text-green-400">$merged_count</div>
@@ -720,9 +720,9 @@ function render() {
     const sevBg = sev==='high'?'bg-sev-high/15 text-sev-high':sev==='medium'?'bg-sev-medium/15 text-sev-medium':'bg-sev-low/15 text-sev-low';
     const statusColors = {found:'bg-link/15 text-link',verified:'bg-link/25 text-link',submitted:'bg-sev-medium/15 text-sev-medium',merged:'bg-green-400/15 text-green-400',rejected:'bg-sev-high/15 text-sev-high',wontfix:'bg-sev-low/15 text-sev-low',duplicate:'bg-sev-low/15 text-sev-low'};
     const statusCls = statusColors[status] || 'bg-link/15 text-link';
-    const roiColor = f.roi_score>=5?'text-sev-high':f.roi_score>=1?'text-sev-medium':'text-txt-muted';
+    const roiColor = f.roi_score>=500?'text-sev-high':f.roi_score>=100?'text-sev-medium':'text-txt-muted';
     const infoVal = f.info_score!=null?f.info_score:0;
-    const infoColor = infoVal>=3?'text-[#e879f9]':infoVal>=1?'text-[#c084fc]':'text-txt-muted';
+    const infoColor = infoVal>=300?'text-[#e879f9]':infoVal>=50?'text-[#c084fc]':'text-txt-muted';
     const fid = esc(f.id || '');
     return '<tr class="border-b border-surface-3 hover:bg-surface-2 transition-colors cursor-pointer" data-idx="'+idx+'" onclick="showDetail('+idx+')">'
       +'<td class="px-3 py-2.5 align-top font-mono text-[10px] text-txt-dim cursor-copy" title="クリックでコピー: '+fid+'" onclick="event.stopPropagation();navigator.clipboard.writeText(\''+fid+'\');this.style.color=\'#0a7d5a\';setTimeout(()=>this.style.color=\'\',600)">'+fid.slice(0,12)+'</td>'
@@ -731,8 +731,8 @@ function render() {
       +'<td class="px-3 py-2.5 align-top max-w-[400px]">'+titleText+'</td>'
       +'<td class="px-3 py-2.5 align-top font-mono text-xs text-file" title="'+esc(loc)+'">'+esc(shortFile)+'</td>'
       +'<td class="px-3 py-2.5 align-top"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium '+statusCls+'">'+status+'</span></td>'
-      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(1):'-')+'</td>'
-      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+infoColor+'" title="surprise='+((f.surprise||0).toFixed(2))+'">'+(infoVal?infoVal.toFixed(1):'-')+'</td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(0):'-')+'</td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+infoColor+'" title="surprise='+((f.surprise||0).toFixed(2))+'">'+(infoVal?infoVal.toFixed(0):'-')+'</td>'
       +'</tr>';
   }).join("");
 }
@@ -758,7 +758,7 @@ function showDetail(idx) {
 
   const churnColor = f.churn>10?'text-sev-high':f.churn>3?'text-sev-medium':'text-txt-muted';
   const fanColor = f.fan_out>5?'text-sev-high':f.fan_out>2?'text-sev-medium':'text-txt-muted';
-  const roiColor = f.roi_score>=5?'text-sev-high':f.roi_score>=1?'text-sev-medium':'text-txt-muted';
+  const roiColor = f.roi_score>=500?'text-sev-high':f.roi_score>=100?'text-sev-medium':'text-txt-muted';
 
   const sevBg = (f.severity||'low')==='high'?'bg-sev-high/15 text-sev-high':(f.severity||'low')==='medium'?'bg-sev-medium/15 text-sev-medium':'bg-sev-low/15 text-sev-low';
   const statusColors = {found:'bg-link/15 text-link',verified:'bg-link/25 text-link',submitted:'bg-sev-medium/15 text-sev-medium',merged:'bg-green-400/15 text-green-400',rejected:'bg-sev-high/15 text-sev-high',wontfix:'bg-sev-low/15 text-sev-low',duplicate:'bg-sev-low/15 text-sev-low'};
@@ -778,11 +778,11 @@ function showDetail(idx) {
 
     +'<div class="text-[10px] uppercase tracking-wider text-txt-dim mt-4 mb-1.5 font-semibold">解消価値 (ROI)</div>'
     +'<div class="grid grid-cols-2 gap-2">'
-    +'<div class="col-span-2 bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-[28px] font-bold font-mono '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(1):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">解消価値</div></div>'
+    +'<div class="col-span-2 bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-[28px] font-bold font-mono '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(0):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">解消価値</div></div>'
     +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono '+churnColor+'">'+(f.churn||0)+'</div><div class="text-[10px] text-txt-muted mt-0.5">変更頻度 (6M)</div></div>'
     +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono '+fanColor+'">'+(f.fan_out||0)+'</div><div class="text-[10px] text-txt-muted mt-0.5">被参照数</div></div>'
-    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono text-debt">'+(f.debt_score!=null?f.debt_score.toFixed(2):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">負債スコア</div></div>'
-    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono" style="color:#e879f9">'+(f.info_score!=null?f.info_score.toFixed(1):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">情報量 <span title="-log₂P(violation)">S='+(f.surprise!=null?f.surprise.toFixed(2):'-')+'</span></div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono text-debt">'+(f.debt_score!=null?f.debt_score.toFixed(0):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">負債スコア</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono" style="color:#e879f9">'+(f.info_score!=null?f.info_score.toFixed(0):'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">情報量 <span title="-log₂P(violation)">S='+(f.surprise!=null?f.surprise.toFixed(2):'-')+'</span></div></div>'
     +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2.5 text-center"><div class="text-xl font-bold font-mono text-txt-muted">'+(f.found_at||'-')+'</div><div class="text-[10px] text-txt-muted mt-0.5">検出日</div></div>'
     +'</div>'
 

@@ -485,6 +485,12 @@ def _config_init(repo_path: str, interactive: bool = True) -> None:
     if "preset" not in existing:
         existing["preset"] = preset_key
 
+    # --- Add optional keys with documentation ---
+    if "disabled_patterns" not in existing:
+        existing["_comment_disabled_patterns"] = "disabled_patterns: [\"⑦\", \"⑩\"] で特定パターンを無効化"
+    if "default_model" not in existing:
+        existing["_comment_default_model"] = "default_model: \"claude-sonnet-4-20250514\" でデフォルトモデル変更"
+
     config_path.write_text(
         json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -494,6 +500,7 @@ def _config_init(repo_path: str, interactive: bool = True) -> None:
         cats = list(preset_categories.keys())
         print(f"  カテゴリ: {', '.join(cats)}", file=sys.stderr)
     print("  scoring / categories セクションを編集してチームに合わせてください。", file=sys.stderr)
+    print("  disabled_patterns / default_model も追加可能です。", file=sys.stderr)
 
 
 def _config_show(repo_path: str) -> None:
@@ -531,6 +538,7 @@ def _apply_config_to_parser(parser, config: dict):
         "backend": "backend",
         "severity": "severity",
         "model": "model",
+        "default_model": "model",  # alias: default_model → model
         "verbose": "verbose",
         "semantic": "semantic",
         "autofix": "autofix",
@@ -706,6 +714,14 @@ def _filter_new_findings(findings: list[dict],
 def cmd_init(args):
     """Initialize delta-lint for a repository (lightweight)."""
     repo_path = str(Path(args.repo).resolve())
+
+    # Intro animation (skip if --quiet or non-TTY)
+    if not getattr(args, 'quiet', False) and sys.stderr.isatty():
+        try:
+            from intro_animation import run_animation
+            run_animation()
+        except Exception:
+            pass
 
     print("── δ-lint ── 初期化開始", file=sys.stderr)
 
@@ -1354,26 +1370,52 @@ def cmd_scan(args):
                 print(f"  {w}", file=sys.stderr)
         sys.exit(0)
 
-    # Step 3.5: Load known constraints and team policy
+    # Step 3.5: Load known constraints, team policy, and config
     from detector import load_constraints, load_policy
+    config = _load_config(repo_path)
     target_paths = [f.path for f in context.target_files]
     constraints = load_constraints(repo_path, target_paths)
     policy = load_policy(repo_path)
     if constraints and args.verbose:
         total_c = sum(len(c.get("implicit_constraints", [])) for c in constraints)
         print(f"  Loaded {total_c} constraint(s) from {len(constraints)} module(s)", file=sys.stderr)
+    # Apply exclude_paths from policy (filter out 3rd-party / vendor code)
+    exclude_paths = policy.get("exclude_paths", []) if policy else []
+    if exclude_paths:
+        import fnmatch
+        before_count = len(source_files)
+        source_files = [
+            f for f in source_files
+            if not any(fnmatch.fnmatch(f, pat) for pat in exclude_paths)
+        ]
+        excluded_count = before_count - len(source_files)
+        if excluded_count > 0:
+            # Rebuild context without excluded files
+            context = build_context(repo_path, source_files)
+            if args.verbose:
+                print(f"  Excluded {excluded_count} file(s) by policy exclude_paths", file=sys.stderr)
+
     if policy and args.verbose:
         parts = []
         if policy.get("architecture"):
             parts.append(f"{len(policy['architecture'])} architecture context(s)")
+        if policy.get("project_rules"):
+            parts.append(f"{len(policy['project_rules'])} project rule(s)")
+        if policy.get("exclude_paths"):
+            parts.append(f"{len(policy['exclude_paths'])} exclude path(s)")
         if policy.get("accepted"):
             parts.append(f"{len(policy['accepted'])} accepted rule(s)")
         if policy.get("severity_overrides"):
             parts.append(f"{len(policy['severity_overrides'])} severity override(s)")
+        if policy.get("prompt_append"):
+            parts.append("prompt_append")
         if policy.get("debt_budget") is not None:
             parts.append(f"debt_budget={policy['debt_budget']}")
         if parts:
             print(f"  Policy: {', '.join(parts)}", file=sys.stderr)
+
+    if config.get("disabled_patterns") and args.verbose:
+        print(f"  Disabled patterns: {', '.join(config['disabled_patterns'])}", file=sys.stderr)
 
     # Step 3.7: Get git diff for change-aware detection
     from retrieval import get_diff_content
@@ -1404,11 +1446,18 @@ def cmd_scan(args):
             print(f"Running detection with {args.model}...", file=sys.stderr)
 
         architecture = policy.get("architecture") if policy else None
+        project_rules = policy.get("project_rules") if policy else None
+        prompt_append = policy.get("prompt_append", "") if policy else ""
+        disabled_patterns = config.get("disabled_patterns") if config else None
         findings = detect(context, repo_name=repo_name, model=args.model,
                            backend=args.backend, lang=args.lang,
                            constraints=constraints or None,
                            architecture=architecture,
-                           diff_text=diff_text)
+                           diff_text=diff_text,
+                           project_rules=project_rules,
+                           repo_path=repo_path,
+                           prompt_append=prompt_append,
+                           disabled_patterns=disabled_patterns)
 
         if args.verbose:
             print(f"  Raw findings: {len(findings)}", file=sys.stderr)
@@ -2105,6 +2154,16 @@ def main():
     # findings dashboard
     fd = find_sub.add_parser("dashboard", help="Generate HTML dashboard viewable in browser")
     fd.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+
+    # findings enrich
+    fe = find_sub.add_parser("enrich", help="Enrich findings with git churn/fan-out data")
+    fe.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+
+    # findings verify-top
+    fv = find_sub.add_parser("verify-top", help="Re-verify top 1/3 findings by priority score")
+    fv.add_argument("--repo", default=".", help="Base path for .delta-lint/findings/")
+    fv.add_argument("--model", default="claude-sonnet-4-20250514", help="LLM model for verification")
+    fv.add_argument("--backend", default="cli", choices=["cli", "api"], help="LLM backend")
 
     # --- config subcommand ---
     config_parser = subparsers.add_parser("config", help="Manage delta-lint configuration")

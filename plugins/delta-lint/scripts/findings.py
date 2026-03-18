@@ -61,12 +61,21 @@ from scoring import (
 def finding_debt_score(f: dict, cfg: ScoringConfig | None = None) -> float:
     """Calculate debt score for a single finding.
 
-    score = severity_weight × pattern_weight × status_multiplier
+    score = severity_weight × pattern_weight × status_multiplier × DEBT_SCALE
     merged/wontfix → 0 (resolved), but history remains in JSONL.
+
+    出力レンジ: 0 〜 1000。
+    典型例:
+      high + ① + found   → 1000
+      medium + ④ + found → 600
+      low + ⑦ + found    → 90
+      any + merged        → 0
 
     If cfg is provided, uses team-customized weights from config.json.
     Otherwise uses built-in defaults.
     """
+    from scoring import DEBT_SCALE
+
     sw = cfg.severity_weight if cfg else SEVERITY_WEIGHT
     pw = cfg.pattern_weight if cfg else PATTERN_WEIGHT
     sm = cfg.status_multiplier if cfg else STATUS_MULTIPLIER
@@ -74,13 +83,14 @@ def finding_debt_score(f: dict, cfg: ScoringConfig | None = None) -> float:
     sev = sw.get(f.get("severity", "low"), 0.3)
     pat = pw.get(f.get("pattern", ""), 0.5)
     status = sm.get(f.get("status", "found"), 1.0)
-    return round(sev * pat * status, 3)
+    return round(sev * pat * status * DEBT_SCALE, 1)
 
 
 def compute_debt_summary(findings: list[dict], cfg: ScoringConfig | None = None) -> dict:
     """Compute aggregate debt metrics from a list of findings.
 
     Returns dict with: total_debt, active_debt, active_count, total_count, resolution_rate.
+    Scores are on 0〜1000 per-finding scale, so total can be thousands for large codebases.
     """
     sm = cfg.status_multiplier if cfg else STATUS_MULTIPLIER
     active = [f for f in findings if sm.get(f.get("status"), 1.0) > 0]
@@ -621,8 +631,12 @@ def cmd_findings(args) -> None:
         _findings_index(base_path, args)
     elif args.findings_command == "dashboard":
         _findings_dashboard(base_path, args)
+    elif args.findings_command == "enrich":
+        _findings_enrich(base_path, args)
+    elif args.findings_command == "verify-top":
+        _findings_verify_top(base_path, args)
     else:
-        print("Usage: delta-lint findings {add|list|update|search|stats|index|dashboard}", file=sys.stderr)
+        print("Usage: delta-lint findings {add|list|update|search|stats|index|dashboard|enrich|verify-top}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -763,6 +777,177 @@ def _findings_dashboard(base_path: str, args) -> None:
             pass
     path = generate_dashboard(base_path, treemap_json=treemap_json)
     print(f"Dashboard generated: {path}")
+
+
+def _findings_enrich(base_path: str, args) -> None:
+    """Enrich findings with git churn, fan-out, and line count data."""
+    from git_enrichment import enrich_findings_batch
+
+    findings = list_findings(base_path)
+    if not findings:
+        print("No findings to enrich.", file=sys.stderr)
+        return
+
+    before = sum(1 for f in findings if f.get("churn_6m") or f.get("fan_out"))
+    enrich_findings_batch(findings, base_path, verbose=True)
+    after = sum(1 for f in findings if f.get("churn_6m") or f.get("fan_out"))
+
+    # Write back to all JSONL files
+    findings_dir = Path(base_path) / ".delta-lint" / "findings"
+    enriched_map = {f["id"]: f for f in findings}
+    updated_total = 0
+
+    for jsonl_path in findings_dir.glob("*.jsonl"):
+        with open(jsonl_path, "r") as fh:
+            lines = [l.strip() for l in fh.readlines() if l.strip()]
+        new_lines = []
+        updated = 0
+        for line in lines:
+            obj = json.loads(line)
+            fid = obj.get("id")
+            if fid in enriched_map:
+                enriched = enriched_map[fid]
+                for key in ("churn_6m", "fix_churn_6m", "fan_out", "total_lines"):
+                    if enriched.get(key) and not obj.get(key):
+                        obj[key] = enriched[key]
+                        updated += 1
+            new_lines.append(json.dumps(obj, ensure_ascii=False))
+        with open(jsonl_path, "w") as fh:
+            fh.write("\n".join(new_lines) + "\n")
+        updated_total += updated
+
+    print(f"Enriched: {before} → {after} findings with git data ({updated_total} fields written)")
+
+
+def _findings_verify_top(base_path: str, args) -> None:
+    """Re-verify top 1/3 of findings by priority score.
+
+    Reads source files referenced by each finding, sends to verifier LLM,
+    and updates status to 'verified' (confirmed) or 'wontfix' (rejected).
+    """
+    from scoring import compute_roi
+    from info_theory import finding_information_score
+
+    findings = list_findings(base_path)
+    if not findings:
+        print("No findings to verify.", file=sys.stderr)
+        return
+
+    # Filter to actionable statuses only
+    actionable_statuses = {"found", "verified"}
+    candidates = [f for f in findings if f.get("status", "found") in actionable_statuses]
+    if not candidates:
+        print("No actionable findings (all already resolved).", file=sys.stderr)
+        return
+
+    # Score and sort by priority
+    scan_history = load_scan_history(base_path)
+    for f in candidates:
+        try:
+            info = finding_information_score(f, scan_history).get("info_score", 0)
+        except Exception:
+            info = 0
+        try:
+            roi = compute_roi(
+                severity=f.get("severity", "low"),
+                churn_6m=f.get("churn_6m", 0),
+                fan_out=f.get("fan_out", 0),
+                pattern=f.get("pattern", ""),
+                fix_churn_6m=f.get("fix_churn_6m"),
+            ).get("roi_score", 0)
+        except Exception:
+            roi = 0
+        sev_bonus = {"high": 300, "medium": 100, "low": 0}.get(f.get("severity", "low"), 0)
+        f["_priority"] = info + roi + sev_bonus
+
+    candidates.sort(key=lambda x: -x.get("_priority", 0))
+
+    # Top 1/3 (minimum 3, maximum all)
+    n = max(3, len(candidates) // 3)
+    targets = candidates[:n]
+
+    print(f"Verifying top {len(targets)}/{len(candidates)} findings by priority...",
+          file=sys.stderr)
+
+    # Build lightweight context: read source files for each finding
+    source_files: dict[str, str] = {}
+    for f in targets:
+        loc = f.get("location", {})
+        file_a = loc.get("file_a", f.get("file", ""))
+        file_b = loc.get("file_b", "")
+        for fpath in [file_a, file_b]:
+            if not fpath or fpath in source_files:
+                continue
+            full = Path(base_path) / fpath
+            if full.exists():
+                try:
+                    source_files[fpath] = full.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
+    # Create a minimal context object compatible with verifier
+    class _FindingsContext:
+        """Lightweight context for re-verification of stored findings."""
+        def to_prompt_string(self) -> str:
+            parts = []
+            for fpath, content in source_files.items():
+                parts.append(f"### {fpath}\n```\n{content}\n```")
+            return "\n\n".join(parts) if parts else "(source files not available)"
+
+    context = _FindingsContext()
+
+    # Run verifier
+    from verifier import verify_findings
+    model = getattr(args, "model", "claude-sonnet-4-20250514")
+    backend = getattr(args, "backend", "cli")
+
+    confirmed, rejected, meta = verify_findings(
+        targets, context,
+        model=model, backend=backend,
+        confidence_threshold=0.7,
+        verbose=True,
+    )
+
+    # Update statuses in JSONL
+    confirmed_ids = {f.get("id") for f in confirmed}
+    rejected_ids = {f.get("id") for f in rejected}
+    reject_reasons = {f.get("id"): f.get("_verify_reason", "") for f in rejected}
+
+    findings_dir = Path(base_path) / ".delta-lint" / "findings"
+    status_updates = 0
+
+    for jsonl_path in findings_dir.glob("*.jsonl"):
+        with open(jsonl_path, "r") as fh:
+            lines = [l.strip() for l in fh.readlines() if l.strip()]
+        new_lines = []
+        for line in lines:
+            obj = json.loads(line)
+            fid = obj.get("id")
+            if fid in confirmed_ids and obj.get("status") == "found":
+                obj["status"] = "verified"
+                obj["verified"] = True
+                status_updates += 1
+            elif fid in rejected_ids:
+                obj["status"] = "wontfix"
+                obj["_verify_reason"] = reject_reasons.get(fid, "")
+                status_updates += 1
+            new_lines.append(json.dumps(obj, ensure_ascii=False))
+        with open(jsonl_path, "w") as fh:
+            fh.write("\n".join(new_lines) + "\n")
+
+    # Summary
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"Verify-top summary:", file=sys.stderr)
+    print(f"  Verified (confirmed): {len(confirmed)}", file=sys.stderr)
+    print(f"  Rejected (wontfix):   {len(rejected)}", file=sys.stderr)
+    print(f"  Status updates:       {status_updates}", file=sys.stderr)
+    if rejected:
+        print(f"\n  Rejected findings:", file=sys.stderr)
+        for f in rejected:
+            fid = f.get("id", "?")
+            reason = f.get("_verify_reason", "no reason")
+            print(f"    ✗ {fid}: {reason}", file=sys.stderr)
+    print(f"{'='*60}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -1071,6 +1256,7 @@ def generate_dashboard(
             _fan.get(_finding_file(f), 0),
             f.get("pattern", ""),
             _tmp_cfg,
+            fix_churn_6m=f.get("fix_churn_6m"),
         )["roi_score"]
         for f in findings
         if f.get("status", "found") not in resolved_statuses
@@ -1099,6 +1285,7 @@ def generate_dashboard(
             fan_out=fan_val,
             pattern=f.get("pattern", ""),
             cfg=scoring_cfg,
+            fix_churn_6m=f.get("fix_churn_6m"),
         )
         f["churn"] = roi["churn_6m"]
         f["churn_6m"] = churn_val  # preserve for info_theory

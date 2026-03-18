@@ -4,6 +4,13 @@ Scoring configuration for delta-lint.
 Single source of truth for all scoring weights.
 Defaults are hardcoded here; teams can override via .delta-lint/config.json.
 
+Scale design:
+    debt_score:  0 〜 1000  (severity × pattern × status × DEBT_SCALE)
+    roi_score:   0 〜 数千   (severity × churn × fan_out / fix_cost × ROI_SCALE)
+    info_score:  0 〜 数千   (surprise × entropy × channel / fix_cost × INFO_SCALE)
+
+    大きい数字のほうが直感的。「負債 600」「解消価値 3500」。
+
 Usage:
     from scoring import load_scoring_config
 
@@ -16,6 +23,14 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
+# ---------------------------------------------------------------------------
+# Scale multipliers — 各スコアの出力レンジを制御
+# ---------------------------------------------------------------------------
+
+DEBT_SCALE = 1000       # debt_score: 0〜1000
+ROI_SCALE = 100         # roi_score: 0〜数千（churn/fan_out が大きいと数千に達する）
+INFO_SCALE = 100        # info_score: 0〜数千（同上）
 
 # ---------------------------------------------------------------------------
 # Default weights
@@ -55,37 +70,41 @@ DEFAULT_STATUS_MULTIPLIER: dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 # Churn: normalized from git log change count (last 6 months)
-# Teams can override the normalization thresholds.
+# 小規模リポでも差が出るように hot=3/月 に引き下げ。
+# 大規模リポ（月10回以上）は cap されるが、weight は十分大きい。
 DEFAULT_CHURN_THRESHOLDS: dict[str, float] = {
-    "hot": 10.0,      # changes/month >= hot → max weight (3.0)
-    "warm": 1.0,       # changes/month >= warm → weight 1.0
-    "cold": 0.0,       # changes/month < warm → min weight (0.1)
-    "max_weight": 3.0,
-    "min_weight": 0.1,
+    "hot": 3.0,        # changes/month >= hot → max weight
+    "warm": 0.5,       # changes/month >= warm → 中間
+    "cold": 0.0,       # changes/month < warm → min weight
+    "max_weight": 10.0,
+    "min_weight": 0.5,
 }
 
 # Fan-out: number of files that import/reference this file
+# 5参照で max に到達。3参照でも weight 7.0 — 小規模リポで差が出る。
 DEFAULT_FAN_OUT_THRESHOLDS: dict[str, float] = {
-    "high": 10.0,      # fan_out >= high → max weight (5.0)
-    "medium": 3.0,     # fan_out >= medium → weight 2.0
-    "low": 0.0,        # fan_out < medium → weight 1.0
-    "max_weight": 5.0,
+    "high": 5.0,       # fan_out >= high → max weight
+    "medium": 2.0,     # fan_out >= medium → 中間
+    "low": 0.0,        # fan_out < medium → min weight
+    "max_weight": 10.0,
     "min_weight": 1.0,
 }
 
-# Fix cost: mapped from contradiction pattern type (lower = cheaper = higher ROI)
+# Fix cost: パターン別の修正工数。
+# 範囲: 0.5（削除だけ）〜 8.0（大規模リファクタ）。
+# 実際のコスト（テスト壊れ、他チーム影響）は finding 単位で上書き可能。
 DEFAULT_FIX_COST: dict[str, float] = {
-    "①": 1.0,   # Asymmetric Defaults — 比較的安い
-    "②": 1.5,   # One-sided Evolution
-    "③": 1.0,   # Silent Fallback Divergence
-    "④": 0.8,   # Guard Non-Propagation — ガード追加だけ
-    "⑤": 1.5,   # Paired-Setting Override
-    "⑥": 1.2,   # Lifecycle Ordering
+    "①": 1.5,   # Asymmetric Defaults — デフォルト値の統一
+    "②": 2.0,   # Semantic Mismatch — 意味の統一は影響範囲が広い
+    "③": 1.5,   # External Spec Divergence — 仕様準拠修正
+    "④": 1.0,   # Guard Non-Propagation — ガード追加だけ
+    "⑤": 2.5,   # Paired-Setting Override — 設定の整合性は波及する
+    "⑥": 2.0,   # Lifecycle Ordering — 実行順序の修正
     "⑦": 0.5,   # Dead Code — 削除するだけ
-    "⑧": 1.5,   # Duplication Drift — 共通化が必要
-    "⑨": 0.8,   # Interface Mismatch — シグネチャ修正
-    "⑩": 2.0,   # Missing Abstraction — 共通ユーティリティ作成
-    "_default": 1.0,
+    "⑧": 3.0,   # Duplication Drift — 共通化が必要
+    "⑨": 1.5,   # Interface Mismatch — シグネチャ修正 + 呼び出し側
+    "⑩": 5.0,   # Missing Abstraction — 共通ユーティリティ作成 + 全箇所移行
+    "_default": 1.5,
 }
 
 
@@ -244,11 +263,12 @@ def churn_to_weight(changes_6m: int, cfg: ScoringConfig | None = None) -> float:
     """Convert raw git churn (change count in 6 months) to weight.
 
     Linear interpolation between min_weight and max_weight.
+    hot=3/月 → 6ヶ月で18回変更で max。小規模リポでも差が出る。
     """
     t = (cfg or ScoringConfig()).churn_thresholds
-    max_w = t.get("max_weight", 3.0)
-    min_w = t.get("min_weight", 0.1)
-    hot = t.get("hot", 10.0) * 6  # hot is per-month, convert to 6-month total
+    max_w = t.get("max_weight", 10.0)
+    min_w = t.get("min_weight", 0.5)
+    hot = t.get("hot", 3.0) * 6  # hot is per-month, convert to 6-month total
     if hot <= 0:
         return min_w
     ratio = min(changes_6m / hot, 1.0)
@@ -256,11 +276,14 @@ def churn_to_weight(changes_6m: int, cfg: ScoringConfig | None = None) -> float:
 
 
 def fan_out_to_weight(fan_out: int, cfg: ScoringConfig | None = None) -> float:
-    """Convert raw fan-out (import reference count) to weight."""
+    """Convert raw fan-out (import reference count) to weight.
+
+    high=5 で max。3参照でも weight 6.4 — 小規模リポで十分な差。
+    """
     t = (cfg or ScoringConfig()).fan_out_thresholds
-    max_w = t.get("max_weight", 5.0)
+    max_w = t.get("max_weight", 10.0)
     min_w = t.get("min_weight", 1.0)
-    high = t.get("high", 10.0)
+    high = t.get("high", 5.0)
     if high <= 0:
         return min_w
     ratio = min(fan_out / high, 1.0)
@@ -270,7 +293,7 @@ def fan_out_to_weight(fan_out: int, cfg: ScoringConfig | None = None) -> float:
 def pattern_fix_cost(pattern: str, cfg: ScoringConfig | None = None) -> float:
     """Get fix cost weight for a contradiction pattern."""
     fc = (cfg or ScoringConfig()).fix_cost
-    return fc.get(pattern, fc.get("_default", 1.0))
+    return fc.get(pattern, fc.get("_default", 1.5))
 
 
 def compute_roi(
@@ -279,23 +302,36 @@ def compute_roi(
     fan_out: int,
     pattern: str,
     cfg: ScoringConfig | None = None,
+    fix_churn_6m: int | None = None,
 ) -> dict:
     """Compute 解消価値 (resolution ROI) for a finding.
 
-    Formula: severity × churn_weight × fan_out_weight / fix_cost
+    Formula: severity × churn_weight × fan_out_weight / fix_cost × ROI_SCALE
 
-    Returns dict with raw values and computed score for dashboard display.
+    churn_weight は fix_churn_6m（バグ修正コミット数）があればそちらを優先使用。
+    fix_churn はバグ修正に関連するコミットのみカウントするため、
+    機能追加で膨らんだ churn よりも「壊れやすさ」の精度が高い。
+
+    出力レンジ: 0 〜 数千。
+    典型例:
+      high severity + hot fix_churn + 5 fan_out + ④ガード追加 → ~10000
+      low severity + cold churn + 1 fan_out + ⑩共通化         → ~3
     """
     c = cfg or ScoringConfig()
     sev_w = c.severity_weight.get(severity, 0.3)
-    churn_w = churn_to_weight(churn_6m, c)
+
+    # fix_churn_6m があればそちらで churn_weight を計算（精度が高い）
+    effective_churn = fix_churn_6m if fix_churn_6m is not None else churn_6m
+    churn_w = churn_to_weight(effective_churn, c)
+
     fan_w = fan_out_to_weight(fan_out, c)
     fix_c = pattern_fix_cost(pattern, c)
 
-    score = round(sev_w * churn_w * fan_w / max(fix_c, 0.1), 1)
+    score = round(sev_w * churn_w * fan_w / max(fix_c, 0.1) * ROI_SCALE, 1)
 
     return {
         "churn_6m": churn_6m,
+        "fix_churn_6m": fix_churn_6m,
         "churn_weight": churn_w,
         "fan_out": fan_out,
         "fan_out_weight": fan_w,

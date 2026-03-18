@@ -1,5 +1,6 @@
 ---
 name: delta-review
+user-invocable: false
 description: >
   Pre-implementation impact analysis for code changes. Has two modes:
   (1) FULL MODE - explicit "delta review", "delta plan", "影響範囲チェック" etc.
