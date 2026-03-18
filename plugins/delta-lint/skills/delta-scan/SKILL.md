@@ -48,7 +48,19 @@ Only treat it as an error if stderr contains a Python traceback or "Error:" pref
 2. User says "suppress" with a number → **Suppress Add**
 3. User says "suppress --list" or "suppress --check" → **Suppress List/Check**
 4. User says "findings" → **Findings**
-5. If unclear, default to **Scan**
+5. User says "set-persona pm/qa/engineer" → **Set default persona** (no scan)
+6. If unclear, default to **Scan**
+
+### Persona mode
+
+Output can be tailored for different audiences via `--for`:
+- `--for engineer` (default): technical output with file paths and method names
+- `--for pm`: user-facing impact, spec gaps, business decisions — no code references
+- `--for qa`: test scenarios and reproduction steps — no code knowledge needed
+
+Natural language triggers: 「PM向け」「わかりやすく」→ pm, 「QA向け」「テストケースで」→ qa
+
+See [persona-guide.md](references/persona-guide.md) for details.
 
 ## Quick Reference
 

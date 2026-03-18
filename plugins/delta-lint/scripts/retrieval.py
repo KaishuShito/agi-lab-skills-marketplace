@@ -12,10 +12,17 @@ Design decisions (traced to experiment data):
 - Diff-based scoping: Limits context to changed files + 1-hop deps
 - v0: dependency files are included in full (with size limit)
   Future v1: extract public interfaces only
+
+Tiered confidence (inspired by GitNexus resolution-context.ts):
+- Tier 1 (0.95): same-directory explicit import
+- Tier 2 (0.85): relative import resolved to file (cross-directory)
+- Tier 3 (0.50): project-scope name match (non-relative import)
+- Dependencies below MIN_CONFIDENCE are excluded from LLM context
 """
 
 import re
 import subprocess
+from enum import Enum
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -27,6 +34,30 @@ from dataclasses import dataclass, field
 MAX_CONTEXT_CHARS = 80_000  # ~20k tokens, well within Claude's window
 MAX_FILE_CHARS = 30_000     # Skip very large files
 MAX_DEPS_PER_FILE = 5       # Limit dependency fan-out
+MIN_CONFIDENCE = 0.50       # Dependencies below this are excluded
+
+
+class DepTier(Enum):
+    """Dependency resolution confidence tier."""
+    SAME_DIR = 1     # Same directory, explicit import → confidence 0.95
+    RELATIVE = 2     # Relative import, cross-directory → confidence 0.85
+    PROJECT = 3      # Project-scope name match → confidence 0.50
+
+    @property
+    def confidence(self) -> float:
+        return {
+            DepTier.SAME_DIR: 0.95,
+            DepTier.RELATIVE: 0.85,
+            DepTier.PROJECT: 0.50,
+        }[self]
+
+    @property
+    def label(self) -> str:
+        return {
+            DepTier.SAME_DIR: "same-dir import",
+            DepTier.RELATIVE: "relative import",
+            DepTier.PROJECT: "project-scope match",
+        }[self]
 
 
 @dataclass
@@ -34,6 +65,8 @@ class FileContext:
     path: str
     content: str
     is_target: bool  # True = changed file, False = dependency
+    confidence: float = 1.0  # 1.0 for targets, tier-based for deps
+    dep_tier: str = ""  # DepTier label, empty for targets
 
 
 @dataclass
@@ -50,8 +83,14 @@ class ModuleContext:
         parts = []
         for f in self.target_files:
             parts.append(f"=== {f.path} (CHANGED) ===\n{f.content}")
-        for f in self.dep_files:
-            parts.append(f"=== {f.path} (DEPENDENCY) ===\n{f.content}")
+        # Sort deps by confidence descending — LLM sees high-confidence deps first
+        sorted_deps = sorted(self.dep_files, key=lambda d: -d.confidence)
+        for f in sorted_deps:
+            conf_pct = int(f.confidence * 100)
+            parts.append(
+                f"=== {f.path} (DEPENDENCY, confidence={conf_pct}%, {f.dep_tier}) ===\n"
+                f"{f.content}"
+            )
         return "\n\n".join(parts)
 
 
@@ -267,74 +306,129 @@ def filter_source_files(files: list[str]) -> list[str]:
 # Import extraction (regex-based, v0)
 # ---------------------------------------------------------------------------
 
-def extract_imports(content: str, filename: str) -> set[str]:
+@dataclass
+class ImportInfo:
+    """An extracted import with its resolution tier hint."""
+    path: str
+    is_relative: bool  # True = ./foo, ../bar, .module — resolvable by path
+    # Named symbols imported (e.g., {"User", "validate"} from "from .auth import User, validate")
+    symbols: frozenset[str] = frozenset()
+
+
+def extract_imports(content: str, filename: str) -> list[ImportInfo]:
     """Extract import/require paths from source code.
 
-    Returns set of import paths (relative imports only for dependency resolution).
-    Based on run_phase0_module.py's extract_imports, extended for Python.
+    Returns list of ImportInfo with relative/non-relative classification.
+    Non-relative imports are kept for Tier 3 project-scope resolution.
     """
-    imports = set()
+    relative: list[ImportInfo] = []
+    nonrelative: list[ImportInfo] = []
     ext = Path(filename).suffix
 
     if ext in (".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx"):
         # require('./foo') or require('../foo')
         for m in re.finditer(r"""require\s*\(\s*['"]([^'"]+)['"]\s*\)""", content):
-            imports.add(m.group(1))
-        # import ... from './foo'
-        for m in re.finditer(r"""from\s+['"]([^'"]+)['"]""", content):
-            imports.add(m.group(1))
+            p = m.group(1)
+            (relative if p.startswith(".") else nonrelative).append(
+                ImportInfo(path=p, is_relative=p.startswith(".")))
+        # import { X, Y } from './foo'  or  import Foo from './foo'
+        for m in re.finditer(
+            r"""(?:import\s+(?:\{([^}]+)\}|(\w+))\s+from|from)\s+['"]([^'"]+)['"]""",
+            content
+        ):
+            syms_bracket, sym_default, p = m.group(1), m.group(2), m.group(3)
+            symbols: set[str] = set()
+            if syms_bracket:
+                for s in syms_bracket.split(","):
+                    name = s.strip().split(" as ")[0].strip()
+                    if name:
+                        symbols.add(name)
+            if sym_default:
+                symbols.add(sym_default)
+            is_rel = p.startswith(".")
+            (relative if is_rel else nonrelative).append(
+                ImportInfo(path=p, is_relative=is_rel, symbols=frozenset(symbols)))
         # import './foo' (side-effect imports)
         for m in re.finditer(r"""import\s+['"]([^'"]+)['"]""", content):
-            imports.add(m.group(1))
+            p = m.group(1)
+            (relative if p.startswith(".") else nonrelative).append(
+                ImportInfo(path=p, is_relative=p.startswith(".")))
 
     elif ext == ".py":
-        # from .module import something
-        for m in re.finditer(r"from\s+(\.[.\w]*)\s+import", content):
-            imports.add(m.group(1))
+        # from .module import something, other
+        for m in re.finditer(r"from\s+(\.[.\w]*)\s+import\s+([^\n;]+)", content):
+            mod_path = m.group(1)
+            names = {n.strip().split(" as ")[0].strip()
+                     for n in m.group(2).split(",") if n.strip()}
+            relative.append(ImportInfo(
+                path=mod_path, is_relative=True, symbols=frozenset(names)))
+        # from module import something (non-relative)
+        for m in re.finditer(r"from\s+([a-zA-Z_]\w*(?:\.\w+)*)\s+import\s+([^\n;]+)", content):
+            mod_path = m.group(1)
+            names = {n.strip().split(" as ")[0].strip()
+                     for n in m.group(2).split(",") if n.strip()}
+            nonrelative.append(ImportInfo(
+                path=mod_path, is_relative=False, symbols=frozenset(names)))
+        # import module (bare import, non-relative)
+        for m in re.finditer(r"^import\s+([a-zA-Z_]\w*(?:\.\w+)*)\s*$", content, re.MULTILINE):
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
     elif ext == ".go":
+        # Go imports: only keep project-internal paths (contain no dots = likely stdlib)
         for m in re.finditer(r'"([^"]+)"', content):
-            imports.add(m.group(1))
+            p = m.group(1)
+            nonrelative.append(ImportInfo(path=p, is_relative=False))
 
     elif ext == ".rs":
         for m in re.finditer(r"use\s+([\w:]+)", content):
-            imports.add(m.group(1))
+            p = m.group(1)
+            is_rel = p.startswith("crate::") or p.startswith("super::")
+            (relative if is_rel else nonrelative).append(
+                ImportInfo(path=p, is_relative=is_rel))
 
     elif ext == ".php":
-        # require/include variants
         for m in re.finditer(r"""(?:require|include)(?:_once)?\s*[\(]?\s*['"]([^'"]+)['"]\s*[\)]?""", content):
-            imports.add(m.group(1))
-        # use Namespace\Class (PSR-4 style)
+            p = m.group(1)
+            relative.append(ImportInfo(path=p, is_relative=True))
         for m in re.finditer(r"use\s+([\w\\]+)", content):
-            imports.add(m.group(1))
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
     elif ext == ".rb":
-        # require/require_relative
-        for m in re.finditer(r"""require(?:_relative)?\s+['"]([^'"]+)['"]""", content):
-            imports.add(m.group(1))
+        for m in re.finditer(r"""require_relative\s+['"]([^'"]+)['"]""", content):
+            relative.append(ImportInfo(path=m.group(1), is_relative=True))
+        for m in re.finditer(r"""require\s+['"]([^'"]+)['"]""", content):
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
     elif ext in (".java", ".kt"):
-        # import com.example.Foo
         for m in re.finditer(r"import\s+([\w.]+)", content):
-            imports.add(m.group(1))
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
     elif ext in (".cs",):
-        # using Namespace.Class
         for m in re.finditer(r"using\s+([\w.]+)\s*;", content):
-            imports.add(m.group(1))
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
     elif ext in (".c", ".cpp", ".h", ".hpp"):
-        # #include "local.h" (not <system.h>)
         for m in re.finditer(r'#include\s+"([^"]+)"', content):
-            imports.add(m.group(1))
+            relative.append(ImportInfo(path=m.group(1), is_relative=True))
 
     elif ext in (".swift",):
-        # import Module
         for m in re.finditer(r"import\s+(\w+)", content):
-            imports.add(m.group(1))
+            nonrelative.append(ImportInfo(path=m.group(1), is_relative=False))
 
-    # Filter to relative imports only (resolvable without package manager)
-    return {i for i in imports if i.startswith(".") or i.startswith("/")}
+    # Deduplicate by path (keep first occurrence with most symbol info)
+    seen: dict[str, ImportInfo] = {}
+    for imp in relative + nonrelative:
+        if imp.path not in seen or len(imp.symbols) > len(seen[imp.path].symbols):
+            seen[imp.path] = imp
+    return list(seen.values())
+
+
+@dataclass
+class ResolvedDep:
+    """A resolved dependency with its tier and candidate paths."""
+    import_info: ImportInfo
+    tier: DepTier
+    candidates: list[str]  # File paths to try (first match wins)
 
 
 def resolve_import_path(base_file: str, import_path: str) -> list[str]:
@@ -372,12 +466,118 @@ def resolve_import_path(base_file: str, import_path: str) -> list[str]:
     return candidates
 
 
+def _classify_tier(base_file: str, imp: ImportInfo, resolved_path: str) -> DepTier:
+    """Classify the dependency tier based on import type and location."""
+    if not imp.is_relative:
+        return DepTier.PROJECT  # Tier 3: non-relative import
+
+    # Relative import — check if same directory
+    base_dir = str(Path(base_file).parent)
+    resolved_dir = str(Path(resolved_path).parent)
+    if base_dir == resolved_dir:
+        return DepTier.SAME_DIR  # Tier 1: same directory
+    return DepTier.RELATIVE  # Tier 2: cross-directory relative
+
+
+def resolve_import_tiered(base_file: str, imp: ImportInfo,
+                          repo_path: str) -> ResolvedDep:
+    """Resolve an import with tier classification.
+
+    For relative imports: use standard path resolution.
+    For non-relative imports: search project files by last segment name match.
+    """
+    if imp.is_relative:
+        candidates = resolve_import_path(base_file, imp.path)
+        # Tier is determined after we find the actual file
+        return ResolvedDep(import_info=imp, tier=DepTier.RELATIVE, candidates=candidates)
+
+    # Non-relative: project-scope search (Tier 3)
+    # Convert module path to filename candidates
+    # e.g., "auth.session" → ["auth/session.py", "auth/session.ts", ...]
+    # e.g., "com.example.UserService" → ["UserService.java", "UserService.kt"]
+    candidates = _nonrelative_candidates(imp.path, base_file, repo_path)
+    return ResolvedDep(import_info=imp, tier=DepTier.PROJECT, candidates=candidates)
+
+
+def _nonrelative_candidates(import_path: str, base_file: str,
+                            repo_path: str) -> list[str]:
+    """Generate candidate file paths for a non-relative import.
+
+    Uses the last segment of the import path as filename to search for.
+    """
+    ext = Path(base_file).suffix
+    candidates = []
+
+    if ext == ".py":
+        # "auth.session" → "auth/session.py"
+        parts = import_path.split(".")
+        rel = "/".join(parts)
+        candidates.append(rel + ".py")
+        candidates.append(rel + "/__init__.py")
+        # Also try just the last part in common locations
+        last = parts[-1]
+        candidates.append(last + ".py")
+
+    elif ext in (".java", ".kt"):
+        # "com.example.UserService" → search for UserService.java
+        last = import_path.rsplit(".", 1)[-1]
+        candidates.append(last + ext)
+
+    elif ext in (".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx"):
+        # "@scope/package" or "lodash" → skip (node_modules)
+        # But "src/utils" → try resolving
+        if import_path.startswith("@") or "/" not in import_path:
+            return []  # npm package, skip
+        for e in [".ts", ".js", ".tsx", ".jsx"]:
+            candidates.append(import_path + e)
+
+    elif ext == ".go":
+        # Go: skip stdlib (no dots or starts with standard prefixes)
+        # Only keep project-internal (contains the repo's module path)
+        if "/" not in import_path or import_path.count("/") < 2:
+            return []  # likely stdlib
+        last_segment = import_path.rsplit("/", 1)[-1]
+        candidates.append(last_segment + ".go")
+
+    return candidates
+
+
 # ---------------------------------------------------------------------------
 # Context building
 # ---------------------------------------------------------------------------
 
+def _find_project_file(repo: Path, candidates: list[str],
+                       seen: set[str]) -> tuple[str, Path] | None:
+    """Try candidates in order. Also search recursively for bare filenames."""
+    for candidate in candidates:
+        if candidate in seen:
+            return None
+        full = repo / candidate
+        if full.exists() and full.is_file():
+            return candidate, full
+
+    # For bare filenames (e.g., "UserService.java"), search project tree
+    for candidate in candidates:
+        if "/" not in candidate and candidate not in seen:
+            # Shallow search: walk top 3 directory levels
+            for depth_limit_dir in repo.rglob(candidate):
+                if depth_limit_dir.is_file():
+                    rel = str(depth_limit_dir.relative_to(repo))
+                    if rel not in seen:
+                        return rel, depth_limit_dir
+    return None
+
+
 def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
     """Build module context for LLM detection.
+
+    Collects dependencies in tiered order:
+    - Tier 1 (same-dir, 0.95): always included
+    - Tier 2 (relative, 0.85): always included
+    - Tier 3 (project, 0.50): included if budget allows, capped at 2 per file
+
+    Dependencies are sorted by confidence in the prompt so the LLM
+    sees high-confidence deps first.
 
     Args:
         repo_path: Path to the git repository root
@@ -410,42 +610,63 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
         ctx.target_files.append(FileContext(path=fpath, content=content, is_target=True))
         total_chars += len(content)
 
-    # Step 2: Resolve and read dependencies (1-hop)
+    # Step 2: Resolve and read dependencies (1-hop) with tiered confidence
     for target in ctx.target_files:
         imports = extract_imports(target.content, target.path)
         dep_count = 0
+        tier3_count = 0  # Cap Tier 3 deps to avoid noise
+        MAX_TIER3_PER_FILE = 2
 
-        for imp in sorted(imports):
+        # Sort: relative imports first (higher tier), then non-relative
+        sorted_imports = sorted(imports, key=lambda i: (not i.is_relative, i.path))
+
+        for imp in sorted_imports:
             if dep_count >= MAX_DEPS_PER_FILE:
                 break
 
-            candidates = resolve_import_path(target.path, imp)
-            for candidate in candidates:
-                if candidate in seen_deps:
-                    break
-                full_path = repo / candidate
-                if full_path.exists() and full_path.is_file():
-                    content = _read_file_safe(full_path)
-                    if content is None:
-                        continue
+            # Skip Tier 3 if budget exhausted
+            if not imp.is_relative and tier3_count >= MAX_TIER3_PER_FILE:
+                continue
 
-                    if total_chars + len(content) > MAX_CONTEXT_CHARS:
-                        ctx.warnings.append(
-                            f"Context limit reached ({total_chars} chars), "
-                            f"skipping remaining deps"
-                        )
-                        return ctx
+            resolved = resolve_import_tiered(target.path, imp, repo_path)
+            found = _find_project_file(repo, resolved.candidates, seen_deps)
+            if found is None:
+                continue
 
-                    if len(content) > MAX_FILE_CHARS:
-                        content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+            candidate, full_path = found
+            content = _read_file_safe(full_path)
+            if content is None:
+                continue
 
-                    ctx.dep_files.append(
-                        FileContext(path=candidate, content=content, is_target=False)
-                    )
-                    seen_deps.add(candidate)
-                    total_chars += len(content)
-                    dep_count += 1
-                    break  # Found the file, stop trying candidates
+            # Determine actual tier now that we know the resolved path
+            tier = _classify_tier(target.path, imp, candidate)
+
+            # Skip below minimum confidence
+            if tier.confidence < MIN_CONFIDENCE:
+                continue
+
+            if total_chars + len(content) > MAX_CONTEXT_CHARS:
+                ctx.warnings.append(
+                    f"Context limit reached ({total_chars} chars), "
+                    f"skipping remaining deps"
+                )
+                return ctx
+
+            if len(content) > MAX_FILE_CHARS:
+                content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+
+            ctx.dep_files.append(FileContext(
+                path=candidate,
+                content=content,
+                is_target=False,
+                confidence=tier.confidence,
+                dep_tier=tier.label,
+            ))
+            seen_deps.add(candidate)
+            total_chars += len(content)
+            dep_count += 1
+            if tier == DepTier.PROJECT:
+                tier3_count += 1
 
     return ctx
 

@@ -158,21 +158,12 @@ for r in results:
 ✅ ホットスポットの直接スキャン: 既存の構造矛盾は検出されませんでした。
 ```
 
-## Step 2.5: Add .gitignore for .delta-lint/ — EXECUTE IMMEDIATELY
+## Step 2.5: .gitignore は自動生成 — 操作不要
 
-**Do not wait for Step 2 to complete.** `.delta-lint/` をデフォルトで git 管理対象外にする。
+`stress_test.py` が `.delta-lint/.gitignore`（`*` + `!.gitignore`）を自動生成する。
+プロジェクトの root `.gitignore` を編集する必要はない。
 
-プロジェクトの `.gitignore` に以下を追加する（既に存在する場合はスキップ）：
-
-```gitignore
-# delta-lint (uncomment below to share landmine map with team)
-.delta-lint/
-# To share with team, replace above with:
-# .delta-lint/stress-test/structure.json
-# .delta-lint/stress-test/modifications.json
-# .delta-lint/stress-test/landmine_map.html
-# .delta-lint/delta_lint_*.json
-```
+チームで地雷マップを共有したい場合は、`.delta-lint/.gitignore` を編集して必要なファイルを除外解除する。
 
 ## Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY
 

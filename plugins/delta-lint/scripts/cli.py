@@ -373,11 +373,32 @@ def cmd_scan(args):
         print(f"WARNING: suppress {entry.id} expired (code changed): {files_str}",
               file=sys.stderr)
 
-    print_results(result.shown,
-                  filtered_count=len(result.filtered),
-                  suppressed_count=len(result.suppressed),
-                  expired_count=len(result.expired),
-                  output_format=args.output_format)
+    # Resolve persona: explicit --for > config.json > "engineer"
+    persona = args.persona
+    if persona is None:
+        from persona_translator import load_default_persona
+        persona = load_default_persona(repo_path)
+
+    if persona in ("pm", "qa"):
+        # Non-engineer mode: translate findings instead of technical output
+        from persona_translator import translate
+        translated = translate(result.shown, persona=persona,
+                               model=args.model, verbose=args.verbose)
+        if translated:
+            print(translated)
+        else:
+            # Fallback: show standard output if translation failed
+            print_results(result.shown,
+                          filtered_count=len(result.filtered),
+                          suppressed_count=len(result.suppressed),
+                          expired_count=len(result.expired),
+                          output_format=args.output_format)
+    else:
+        print_results(result.shown,
+                      filtered_count=len(result.filtered),
+                      suppressed_count=len(result.suppressed),
+                      expired_count=len(result.expired),
+                      output_format=args.output_format)
 
     # Step 6: Save log
     log_dir = args.log_dir or str(Path(repo_path) / ".delta-lint")
@@ -657,6 +678,12 @@ def main():
         choices=["en", "ja"],
         help="Output language for finding descriptions (default: en). "
              "Controls contradiction, impact, and internal_evidence fields.",
+    )
+    scan_parser.add_argument(
+        "--for", default=None, dest="persona",
+        choices=["engineer", "pm", "qa"],
+        help="Output persona: engineer (default), pm (non-technical), qa (test scenarios). "
+             "Uses .delta-lint/config.json default if not specified.",
     )
 
     # --- findings subcommand ---

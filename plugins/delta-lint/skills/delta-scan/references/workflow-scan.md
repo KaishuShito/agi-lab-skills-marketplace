@@ -1,5 +1,27 @@
 # Workflow 1: Scan (`/delta-lint` or `/delta-lint scan`)
 
+## Step 0: Detect persona
+
+ユーザーの指示からペルソナを判定する。明示指定がなければ `.delta-lint/config.json` のデフォルトを使う（未設定なら `engineer`）。
+
+**判定ルール:**
+- `--for pm` / 「PM向け」「非エンジニア向け」「わかりやすく」 → `pm`
+- `--for qa` / 「QA向け」「テストケースにして」「テストシナリオで」 → `qa`
+- `--for engineer` / 「技術的に」「エンジニア向け」「詳しく」 → `engineer`
+- `set-persona {pm|qa|engineer}` → デフォルトを変更して終了（スキャンしない）
+
+```bash
+# デフォルト確認（Python ワンライナー）
+cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator import load_default_persona; print(load_default_persona('{repo_path}'))"
+```
+
+**set-persona の場合:**
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator import save_default_persona; save_default_persona('{persona}', '{repo_path}'); print('✓ デフォルトペルソナを {persona} に設定しました')"
+```
+
+判定したペルソナを `{persona}` 変数として以降のステップで使う。
+
 ## Step 1: Determine scope and dry-run
 
 Determine the target repo path (default: current working directory).
@@ -126,6 +148,26 @@ finding の条件が現在の設定/コードで実際に発火するか確認:
 
 **LIVE の finding のみを Step 6 で findings add する。** DEAD/FIXED は記録しない（ノイズ削減）。
 DORMANT は findings add するが `--finding-severity` を1段下げる（high→medium, medium→low）。
+
+## Step 5.7: Persona translation（pm / qa の場合のみ）
+
+**`{persona}` が `pm` または `qa` の場合、トリアージ結果を翻訳して表示する。**
+`engineer` の場合はこのステップをスキップ。
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python -c "
+import json
+from persona_translator import translate
+
+findings = {findings_json}
+result = translate(findings, persona='{persona}', verbose=True)
+print(result)
+"
+```
+
+`{findings_json}` は Step 5.5 のトリアージ完了後の LIVE + DORMANT findings を JSON 配列として渡す。
+
+翻訳結果をユーザーに表示する。engineer 向けのテクニカル出力は**表示しない**（翻訳結果のみ）。
 
 ## Step 6: Record findings and offer next actions
 
