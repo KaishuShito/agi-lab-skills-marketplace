@@ -1,0 +1,15 @@
+# light — high のみ・高速チェック
+# Usage: delta scan --profile light
+
+name: light
+description: "highのみ・高速チェック。CIゲートやPRレビュー向け"
+
+config:
+  severity: high
+  semantic: false
+
+policy:
+  disabled_patterns: ["⑦", "⑧", "⑨", "⑩"]
+  prompt_append: |
+    Focus only on high-severity contradictions (①-⑥).
+    Skip technical debt patterns. Be concise.

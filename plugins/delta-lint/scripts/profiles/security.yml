@@ -1,0 +1,22 @@
+# security — セキュリティ観点に特化
+# Usage: delta scan --profile security
+
+name: security
+description: "セキュリティ関連の構造矛盾に特化。認証・認可・入力検証のギャップを重点検出"
+
+config:
+  severity: low
+
+policy:
+  disabled_patterns: ["⑦", "⑩"]
+  prompt_append: |
+    Focus on security-relevant structural contradictions:
+    - Authentication/authorization bypass via guard non-propagation (④)
+    - Input validation gaps between parallel endpoints (④)
+    - Permission check asymmetry between create/update/delete paths
+    - Encryption or encoding mismatches between write/read paths (①)
+    - Session or token handling inconsistencies (②)
+
+    Ignore code style, dead code, and missing abstractions.
+    Prioritize findings that could lead to unauthorized access,
+    data leakage, or privilege escalation.

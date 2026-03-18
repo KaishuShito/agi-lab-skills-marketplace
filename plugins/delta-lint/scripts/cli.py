@@ -211,6 +211,34 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
 # Config file loading
 # ---------------------------------------------------------------------------
 
+def _auto_discover_docs(repo_path: str) -> list[str]:
+    """Auto-discover document files for code × document contradiction checking.
+
+    Looks for common documentation files: README.md, ARCHITECTURE.md,
+    docs/**/*.md, and ADR files (docs/decisions/*.md).
+    Returns paths relative to repo root.
+    """
+    repo = Path(repo_path).resolve()
+    candidates = [
+        "README.md", "ARCHITECTURE.md", "CONTRIBUTING.md",
+        "DEVELOPMENT.md", "DESIGN.md", "API.md",
+    ]
+    found: list[str] = []
+    for c in candidates:
+        if (repo / c).exists():
+            found.append(c)
+
+    # docs/**/*.md — ADRs, specs, guides
+    docs_dir = repo / "docs"
+    if docs_dir.is_dir():
+        for md in docs_dir.rglob("*.md"):
+            rel = str(md.relative_to(repo))
+            if rel not in found:
+                found.append(rel)
+
+    return found
+
+
 def _load_config(repo_path: str = ".") -> dict:
     """Load .delta-lint/config.json if it exists. Returns empty dict otherwise."""
     config_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
@@ -220,6 +248,81 @@ def _load_config(repo_path: str = ".") -> dict:
         except (OSError, json.JSONDecodeError):
             pass
     return {}
+
+
+def _load_profile(profile_name: str, repo_path: str = ".") -> dict:
+    """Load a scan profile from .delta-lint/profiles/<name>.yml or built-in profiles/.
+
+    Resolution order:
+    1. .delta-lint/profiles/<name>.yml (repo-local, user-created)
+    2. Built-in profiles/<name>.yml (shipped with delta-lint)
+
+    Returns the profile's 'config' dict merged with 'policy' dict,
+    or empty dict if profile not found.
+    """
+    try:
+        import yaml
+    except ImportError:
+        print("⚠ PyYAML not installed. Profile loading requires PyYAML.", file=sys.stderr)
+        return {}
+
+    # 1. Repo-local profile
+    repo_profile = Path(repo_path).resolve() / ".delta-lint" / "profiles" / f"{profile_name}.yml"
+    # 2. Built-in profile (next to this script)
+    builtin_profile = Path(__file__).parent / "profiles" / f"{profile_name}.yml"
+
+    profile_path = None
+    if repo_profile.exists():
+        profile_path = repo_profile
+    elif builtin_profile.exists():
+        profile_path = builtin_profile
+
+    if not profile_path:
+        print(f"⚠ Profile '{profile_name}' not found.", file=sys.stderr)
+        print(f"  Searched: {repo_profile}", file=sys.stderr)
+        print(f"           {builtin_profile}", file=sys.stderr)
+        # List available profiles
+        available = []
+        for d in [repo_profile.parent, builtin_profile.parent]:
+            if d.exists():
+                available.extend(p.stem for p in d.glob("*.yml") if not p.stem.startswith("_"))
+        if available:
+            print(f"  Available: {', '.join(sorted(set(available)))}", file=sys.stderr)
+        return {}
+
+    try:
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"⚠ Failed to load profile '{profile_name}': {e}", file=sys.stderr)
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    # Merge config + policy into a flat dict for _apply_config_to_parser
+    result = {}
+    if "config" in data and isinstance(data["config"], dict):
+        result.update(data["config"])
+    if "policy" in data and isinstance(data["policy"], dict):
+        result["_profile_policy"] = data["policy"]
+
+    return result
+
+
+def _apply_profile_policy(args, profile: dict, repo_path: str):
+    """Apply profile's policy section to the scan args.
+
+    Policy fields (prompt_append, disabled_patterns, etc.) are injected
+    into the runtime config rather than argparse defaults.
+    """
+    policy = profile.get("_profile_policy")
+    if not policy:
+        return
+
+    # Store profile policy on args for cmd_scan to pick up
+    if not hasattr(args, '_profile_policy'):
+        args._profile_policy = {}
+    args._profile_policy = policy
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +645,12 @@ def _apply_config_to_parser(parser, config: dict):
         "verbose": "verbose",
         "semantic": "semantic",
         "autofix": "autofix",
+        "diff_target": "diff_target",
+        "output_format": "output_format",
+        "format": "output_format",       # alias: format → output_format
+        "no_learn": "no_learn",
+        "no_cache": "no_cache",
+        "no_verify": "no_verify",
     }
     new_defaults = {}
     for config_key, dest in mapping.items():
@@ -901,7 +1010,8 @@ def cmd_init(args):
                         pass
 
                 # Regenerate dashboard with progress info
-                dash_path = generate_dashboard(repo_path, scan_progress=progress, treemap_json=_treemap)
+                _dash_tpl = getattr(args, '_dashboard_template', "")
+                dash_path = generate_dashboard(repo_path, scan_progress=progress, treemap_json=_treemap, dashboard_template=_dash_tpl)
 
                 # Open browser on first generation
                 if not dashboard_opened:
@@ -1151,7 +1261,7 @@ def cmd_watch(args):
 
             try:
                 # Build context
-                context = build_context(repo_path, source_files)
+                context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
                 if not context.target_files:
                     print(f"  ⚠ No readable source files. Skipping.", file=sys.stderr)
                     time.sleep(interval)
@@ -1328,15 +1438,28 @@ def cmd_scan(args):
             for f in source_files:
                 print(f"  {f}", file=sys.stderr)
 
+    # Step 1.5: Resolve document files (--docs)
+    if hasattr(args, "docs") and args.docs is not None:
+        if args.docs:  # explicit paths given
+            args._doc_files = args.docs
+        else:  # --docs with no arguments → auto-discover
+            args._doc_files = _auto_discover_docs(repo_path)
+        if args.verbose and getattr(args, '_doc_files', None):
+            print(f"Document contract surfaces: {len(args._doc_files)}", file=sys.stderr)
+            for d in args._doc_files:
+                print(f"  {d}", file=sys.stderr)
+
     # Step 2: Build context
     if args.verbose:
         print(f"Building module context...", file=sys.stderr)
 
-    context = build_context(repo_path, source_files)
+    context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
 
     if args.verbose:
         print(f"  Target files: {len(context.target_files)}", file=sys.stderr)
         print(f"  Dependency files: {len(context.dep_files)}", file=sys.stderr)
+        if context.doc_files:
+            print(f"  Document files: {len(context.doc_files)}", file=sys.stderr)
         print(f"  Total context: {context.total_chars} chars", file=sys.stderr)
         for w in context.warnings:
             print(f"  WARNING: {w}", file=sys.stderr)
@@ -1376,6 +1499,53 @@ def cmd_scan(args):
     target_paths = [f.path for f in context.target_files]
     constraints = load_constraints(repo_path, target_paths)
     policy = load_policy(repo_path)
+
+    # Merge profile policy into constraints.yml policy (profile wins on conflict)
+    profile_policy = getattr(args, '_profile_policy', None)
+    if profile_policy:
+        if not policy:
+            policy = {}
+        # prompt_append: concatenate (profile appends to constraints.yml)
+        if "prompt_append" in profile_policy:
+            existing = policy.get("prompt_append", "")
+            policy["prompt_append"] = (existing + "\n\n" + profile_policy["prompt_append"]).strip()
+        # disabled_patterns: profile overrides config.json
+        if "disabled_patterns" in profile_policy:
+            config["disabled_patterns"] = profile_policy["disabled_patterns"]
+        # detect_prompt: custom detection prompt path or inline
+        # - File path (relative to repo): loaded and used as system prompt
+        # - Inline string: used directly as system prompt
+        if "detect_prompt" in profile_policy:
+            policy["detect_prompt"] = profile_policy["detect_prompt"]
+        # accepted: accepted rules override (per-pattern or per-file exceptions)
+        if "accepted" in profile_policy:
+            policy["accepted"] = profile_policy["accepted"]
+        # severity_overrides: per-pattern severity remapping
+        if "severity_overrides" in profile_policy:
+            policy["severity_overrides"] = profile_policy["severity_overrides"]
+        # debt_budget: max active debt score threshold for CI gate
+        if "debt_budget" in profile_policy:
+            policy["debt_budget"] = profile_policy["debt_budget"]
+        # scoring_weights: override scoring formula weights
+        if "scoring_weights" in profile_policy:
+            policy["scoring_weights"] = profile_policy["scoring_weights"]
+        # dashboard_template: custom findings dashboard HTML template
+        if "dashboard_template" in profile_policy:
+            args._dashboard_template = profile_policy["dashboard_template"]
+        # docs: enable document contract surface checking from profile
+        if "docs" in profile_policy and not getattr(args, '_doc_files', None):
+            doc_val = profile_policy["docs"]
+            if doc_val is True:
+                args._doc_files = _auto_discover_docs(repo_path)
+            elif isinstance(doc_val, list):
+                args._doc_files = doc_val
+        # Other policy keys: profile overrides
+        for k in ("architecture", "project_rules", "exclude_paths"):
+            if k in profile_policy:
+                policy[k] = profile_policy[k]
+        if args.verbose:
+            print(f"  Profile policy merged: {list(profile_policy.keys())}", file=sys.stderr)
+
     if constraints and args.verbose:
         total_c = sum(len(c.get("implicit_constraints", [])) for c in constraints)
         print(f"  Loaded {total_c} constraint(s) from {len(constraints)} module(s)", file=sys.stderr)
@@ -1391,7 +1561,7 @@ def cmd_scan(args):
         excluded_count = before_count - len(source_files)
         if excluded_count > 0:
             # Rebuild context without excluded files
-            context = build_context(repo_path, source_files)
+            context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
             if args.verbose:
                 print(f"  Excluded {excluded_count} file(s) by policy exclude_paths", file=sys.stderr)
 
@@ -1449,6 +1619,24 @@ def cmd_scan(args):
         project_rules = policy.get("project_rules") if policy else None
         prompt_append = policy.get("prompt_append", "") if policy else ""
         disabled_patterns = config.get("disabled_patterns") if config else None
+
+        # detect_prompt: profile can override the entire detection prompt
+        # Value can be a file path (relative to repo) or inline prompt text
+        detect_prompt_override = ""
+        raw_detect_prompt = policy.get("detect_prompt", "") if policy else ""
+        if raw_detect_prompt:
+            # If it looks like a file path, try to load it
+            prompt_file = Path(repo_path) / raw_detect_prompt
+            if prompt_file.exists() and prompt_file.is_file():
+                detect_prompt_override = prompt_file.read_text(encoding="utf-8")
+                if args.verbose:
+                    print(f"  Custom detect prompt: {raw_detect_prompt}", file=sys.stderr)
+            else:
+                # Treat as inline prompt text
+                detect_prompt_override = raw_detect_prompt
+                if args.verbose:
+                    print(f"  Custom detect prompt: inline ({len(raw_detect_prompt)} chars)", file=sys.stderr)
+
         findings = detect(context, repo_name=repo_name, model=args.model,
                            backend=args.backend, lang=args.lang,
                            constraints=constraints or None,
@@ -1457,7 +1645,8 @@ def cmd_scan(args):
                            project_rules=project_rules,
                            repo_path=repo_path,
                            prompt_append=prompt_append,
-                           disabled_patterns=disabled_patterns)
+                           disabled_patterns=disabled_patterns,
+                           detect_prompt=detect_prompt_override)
 
         if args.verbose:
             print(f"  Raw findings: {len(findings)}", file=sys.stderr)
@@ -1686,7 +1875,8 @@ def cmd_scan(args):
     if debt_budget is not None:
         from findings import finding_debt_score
         from scoring import load_scoring_config
-        scoring_cfg = load_scoring_config(repo_path)
+        _scoring_overrides = policy.get("scoring_weights") if policy else None
+        scoring_cfg = load_scoring_config(repo_path, profile_overrides=_scoring_overrides)
         active_debt = sum(finding_debt_score(f, scoring_cfg) for f in result.shown)
         if active_debt > debt_budget:
             print(f"\n⚠ Debt budget exceeded: {active_debt:.1f} > {debt_budget} (budget)",
@@ -1735,7 +1925,8 @@ def cmd_view(args):
         print("⚠ データがありません。delta scan を実行してください。", file=sys.stderr)
         sys.exit(1)
 
-    out = generate_dashboard(str(repo_path), treemap_json=treemap_json)
+    _dash_tpl = getattr(args, '_dashboard_template', "")
+    out = generate_dashboard(str(repo_path), treemap_json=treemap_json, dashboard_template=_dash_tpl)
     import webbrowser
     webbrowser.open(f"file://{out}")
     print(f"✓ ダッシュボード (再生成): {out}")
@@ -2061,6 +2252,12 @@ def main():
         help="Polling interval in seconds for watch mode (default: 3.0)",
     )
     scan_parser.add_argument(
+        "--profile", "-p", default=None,
+        help="Scan profile name (e.g. deep, light, security). "
+             "Loads .delta-lint/profiles/<name>.yml or built-in profiles. "
+             "Priority: CLI flags > profile > config.json > defaults.",
+    )
+    scan_parser.add_argument(
         "--deep", action="store_true", default=False,
         help="Deep scan: regex-based surface extraction + contract graph analysis + "
              "LLM verification. Detects hook arg mismatches, orphan hooks, constant "
@@ -2069,6 +2266,13 @@ def main():
     scan_parser.add_argument(
         "--deep-workers", type=int, default=4,
         help="Number of parallel LLM verification workers for deep scan (default: 4)",
+    )
+    scan_parser.add_argument(
+        "--docs", nargs="*", default=None,
+        help="Document files to include as specification contract surfaces. "
+             "Checks code × document contradictions (e.g., README claims vs actual behavior). "
+             "Pass file paths relative to repo root. "
+             "Use --docs without arguments to auto-discover (README.md, ARCHITECTURE.md, docs/**/*.md).",
     )
 
     # --- init subcommand ---
@@ -2268,18 +2472,54 @@ def main():
         help="Show detailed progress",
     )
 
-    # Load config.json and apply as parser defaults (CLI flags still win)
-    # Pre-scan argv for --repo to find the right .delta-lint/config.json
+    # Load config.json and profile, apply as parser defaults (CLI flags still win)
+    # Priority: CLI flags > profile > config.json > argparse defaults
+    # Pre-scan argv for --repo and --profile to resolve paths early
     _repo_hint = "."
+    _profile_hint = None
     for i, arg in enumerate(sys.argv):
         if arg == "--repo" and i + 1 < len(sys.argv):
             _repo_hint = sys.argv[i + 1]
-            break
+        if arg in ("--profile", "-p") and i + 1 < len(sys.argv):
+            _profile_hint = sys.argv[i + 1]
+
+    # Layer 1: config.json (lowest priority)
     _config = _load_config(_repo_hint)
     if _config:
         _apply_config_to_parser(scan_parser, _config)
 
+    # Layer 2: profile (overrides config.json)
+    _profile_data = {}
+    if _profile_hint:
+        _profile_data = _load_profile(_profile_hint, _repo_hint)
+        if _profile_data:
+            # Extract config keys (not _profile_policy) for parser defaults
+            _profile_config = {k: v for k, v in _profile_data.items()
+                               if not k.startswith("_")}
+            if _profile_config:
+                _apply_config_to_parser(scan_parser, _profile_config)
+
     args = parser.parse_args()
+
+    # Build retrieval config: config.json ← profile (2-layer merge)
+    _retrieval_keys = ("max_context_chars", "max_file_chars", "max_deps_per_file", "min_confidence")
+    _rc = {k: _config[k] for k in _retrieval_keys if k in _config}
+    if _profile_data:
+        _rc.update({k: _profile_data[k] for k in _retrieval_keys if k in _profile_data})
+    if _rc:
+        args._retrieval_config = _rc
+
+    # Dashboard template: config.json ← profile policy (2-layer)
+    _dash_tpl = _config.get("dashboard_template", "")
+    if _profile_data:
+        _pp = _profile_data.get("_profile_policy", {})
+        _dash_tpl = _pp.get("dashboard_template", _dash_tpl)
+    if _dash_tpl:
+        args._dashboard_template = _dash_tpl
+
+    # Attach profile policy to args for cmd_scan to use
+    if _profile_data:
+        _apply_profile_policy(args, _profile_data, _repo_hint)
 
     # Default to scan when no subcommand given (backward compat)
     if args.command is None:

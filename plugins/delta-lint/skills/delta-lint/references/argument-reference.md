@@ -5,6 +5,7 @@
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo` | `.` | Repository path |
+| `--profile` / `-p` | (none) | Scan profile: `deep`, `light`, `security`, or custom name from `.delta-lint/profiles/` |
 | `--files` | (git diff) | Specific files to scan |
 | `--severity` | `high` | Minimum severity: high/medium/low |
 | `--format` | `markdown` | Output format: markdown/json |
@@ -47,6 +48,36 @@
 | `--found-by` | - | Who found it (`claude-opus` etc.) |
 | `--verified` | false | Code-verified flag |
 | `--format` | `text` | Output format for list/stats: `text` / `json` |
+
+## Scan Profiles
+
+Named presets that bundle scan settings. Place YAML files in `.delta-lint/profiles/` or use built-in profiles.
+
+```bash
+python cli.py scan --profile deep       # All patterns, all severities, semantic ON
+python cli.py scan -p light             # High only, fast CI gate
+python cli.py scan -p security          # Security-focused detection
+```
+
+Priority: `CLI flags > profile > config.json > defaults`
+
+| Built-in | severity | semantic | Disabled patterns |
+|----------|----------|----------|-------------------|
+| `deep` | low | ON | none |
+| `light` | high | OFF | ⑦⑧⑨⑩ |
+| `security` | low | OFF | ⑦⑩ |
+
+Create custom profiles at `.delta-lint/profiles/<name>.yml`.
+
+### Profile config keys
+
+`severity`, `model`, `backend`, `lang`, `semantic`, `autofix`, `verbose`, `diff_target`, `output_format`, `no_learn`, `no_cache`, `no_verify`, `max_context_chars`, `max_file_chars`, `max_deps_per_file`, `min_confidence`
+
+### Profile policy keys
+
+`prompt_append`, `detect_prompt`, `disabled_patterns`, `severity_overrides`, `exclude_paths`, `architecture`, `project_rules`, `accepted`, `scoring_weights`, `dashboard_template`, `debt_budget`
+
+See `scripts/profiles/_reference.yml` for a complete annotated example.
 
 ## Configuration File
 

@@ -1,6 +1,6 @@
 {
   "name": "delta-lint",
-  "description": "ソースコード間の構造矛盾（暗黙の前提の不整合）をLLM分析で検出するコード品質ツール。scan/suppress/findings/stress-test/地雷マップ可視化をサポート。",
+  "description": "ソースコード間の構造矛盾（暗黙の前提の不整合）をLLM分析で検出するコード品質ツール。scan/suppress/findings/stress-test",
   "version": "0.1.0",
   "author": {
     "name": "sunagawa"

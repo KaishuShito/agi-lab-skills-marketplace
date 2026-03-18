@@ -69,6 +69,26 @@ The same logic pattern appears in 3+ places without shared utility, increasing u
 - ⑦ and ⑩ may involve a single location (no second module needed).
 - ⑧ and ⑨ require two locations (like contradiction patterns).
 
+## Code × Document Contradictions
+
+If **DOCUMENT** files are included in the context (marked as `(DOCUMENT — treat as specification contract)`), also check for contradictions between the documentation and the source code. Documents represent a **specification contract surface** — what the project claims to do.
+
+### What to look for:
+- **Stated behavior vs actual implementation**: README says "authentication is required for all endpoints" but a handler has no auth guard
+- **Documented API vs actual API**: Docs describe parameters, return types, or error codes that differ from the implementation
+- **Architecture claims vs reality**: ADR or ARCHITECTURE.md describes a pattern (e.g., "all errors go through ErrorHandler") but code bypasses it
+- **Configuration documentation vs defaults**: Docs list config keys or defaults that don't match the actual code
+- **Stated invariants vs missing enforcement**: Docs say "email must be unique" but the code has no uniqueness check
+
+### Rules for document contradictions:
+- Report these using the **most applicable pattern** (①-⑥). For example:
+  - README says auth is required but code lacks the guard → ④ Guard Non-Propagation
+  - Docs describe a default value that differs from code → ① Asymmetric Defaults
+  - API docs use a field name that means something different in code → ② Semantic Mismatch
+- Set `"file_a"` to the document path and `"file_b"` to the source code path
+- **Do NOT flag**: Outdated version numbers, typos, formatting issues, or aspirational/roadmap statements clearly marked as future plans
+- **High bar**: The document must make a **concrete, testable claim** about how the code works. Vague statements ("this module handles errors") are not specific enough to contradict.
+
 ## Detection Strategy: Scope-Blind Constraint Check
 
 Developers intentionally narrow their scope when making changes — this is rational. They modify function A, verify it works, and move on. They do NOT check whether function B (which handles the same data, follows the same pattern, or shares an implicit contract with A) is still consistent.

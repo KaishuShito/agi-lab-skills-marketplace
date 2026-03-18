@@ -142,12 +142,21 @@ def _merge_weights(defaults: dict[str, float], overrides: dict) -> dict[str, flo
     return merged
 
 
-def load_scoring_config(repo_path: str | Path = ".") -> ScoringConfig:
-    """Load scoring config from .delta-lint/config.json.
+def load_scoring_config(
+    repo_path: str | Path = ".",
+    profile_overrides: dict | None = None,
+) -> ScoringConfig:
+    """Load scoring config with 3-tier merge.
 
-    Reads the "scoring" section and merges each sub-key with defaults.
-    Missing keys use defaults. Unknown keys are preserved (forward-compat
-    for Phase 2: likelihood_weight, blast_radius_weight).
+    Priority: profile > config.json > defaults
+
+    Args:
+        repo_path: Repository path for .delta-lint/config.json
+        profile_overrides: scoring_weights from profile policy (highest priority)
+
+    Reads the "scoring" section from config.json, then merges profile
+    overrides on top. Missing keys use defaults. Unknown keys are
+    preserved (forward-compat).
     """
     config_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
     scoring_overrides: dict = {}
@@ -159,31 +168,20 @@ def load_scoring_config(repo_path: str | Path = ".") -> ScoringConfig:
         except (OSError, json.JSONDecodeError):
             pass
 
+    # 3-tier merge: defaults ← config.json ← profile
+    def _resolve(key: str, defaults: dict) -> dict:
+        merged = _merge_weights(defaults, scoring_overrides.get(key, {}))
+        if profile_overrides and key in profile_overrides:
+            merged = _merge_weights(merged, profile_overrides[key])
+        return merged
+
     return ScoringConfig(
-        severity_weight=_merge_weights(
-            DEFAULT_SEVERITY_WEIGHT,
-            scoring_overrides.get("severity_weight", {}),
-        ),
-        pattern_weight=_merge_weights(
-            DEFAULT_PATTERN_WEIGHT,
-            scoring_overrides.get("pattern_weight", {}),
-        ),
-        status_multiplier=_merge_weights(
-            DEFAULT_STATUS_MULTIPLIER,
-            scoring_overrides.get("status_multiplier", {}),
-        ),
-        churn_thresholds=_merge_weights(
-            DEFAULT_CHURN_THRESHOLDS,
-            scoring_overrides.get("churn_thresholds", {}),
-        ),
-        fan_out_thresholds=_merge_weights(
-            DEFAULT_FAN_OUT_THRESHOLDS,
-            scoring_overrides.get("fan_out_thresholds", {}),
-        ),
-        fix_cost=_merge_weights(
-            DEFAULT_FIX_COST,
-            scoring_overrides.get("fix_cost", {}),
-        ),
+        severity_weight=_resolve("severity_weight", DEFAULT_SEVERITY_WEIGHT),
+        pattern_weight=_resolve("pattern_weight", DEFAULT_PATTERN_WEIGHT),
+        status_multiplier=_resolve("status_multiplier", DEFAULT_STATUS_MULTIPLIER),
+        churn_thresholds=_resolve("churn_thresholds", DEFAULT_CHURN_THRESHOLDS),
+        fan_out_thresholds=_resolve("fan_out_thresholds", DEFAULT_FAN_OUT_THRESHOLDS),
+        fix_cost=_resolve("fix_cost", DEFAULT_FIX_COST),
     )
 
 

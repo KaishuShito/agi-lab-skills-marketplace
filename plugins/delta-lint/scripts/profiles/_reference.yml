@@ -1,0 +1,139 @@
+# _reference — プロファイルで使える全フィールドのリファレンス
+# これ自体はスキャンプロファイルではない（_prefix なので一覧に出ない）
+#
+# Usage: .delta-lint/profiles/<name>.yml にコピーしてカスタマイズ
+# Priority: CLI flags > profile > config.json > defaults
+
+name: my-profile
+description: "プロファイルの説明"
+
+# ─── config ───────────────────────────────────────────────
+# CLI フラグと同じキー。argparse defaults をオーバーライド。
+# CLI フラグが明示的に指定された場合はそちらが優先。
+config:
+  severity: medium          # high / medium / low — 表示する最低重大度
+  model: claude-sonnet-4-20250514  # LLM モデル
+  backend: cli              # cli ($0) / api (pay-per-use)
+  lang: en                  # en / ja — 出力言語
+  semantic: false            # true: import 外のファイルも検索
+  autofix: false             # true: 検出後に自動修正を生成
+  verbose: false             # true: 詳細ログ
+  diff_target: HEAD          # git diff の比較先
+  output_format: markdown    # markdown / json
+  no_learn: false            # true: sibling_map 自動学習を無効化
+  no_cache: false            # true: キャッシュを無視して毎回 LLM 呼び出し
+  no_verify: false           # true: Phase 2 検証 (FP除去) をスキップ
+
+  # --- retrieval 定数 ---
+  max_context_chars: 80000    # LLM に渡すコンテキストの最大文字数 (~20k tokens)
+  max_file_chars: 30000       # 1ファイルの最大文字数（超過分は切り詰め）
+  max_deps_per_file: 5        # 1ファイルあたりの依存ファイル上限
+  min_confidence: 0.50        # 依存解決の最低信頼度（これ以下は除外）
+
+# ─── policy ───────────────────────────────────────────────
+# 検出ロジックの制御。constraints.yml と同じキー + 拡張。
+policy:
+  # --- プロンプト制御 ---
+  prompt_append: |
+    # constraints.yml の prompt_append に連結される追加指示。
+    # detect.md を置き換えずに指示を足したいときに使う。
+    Focus on authentication and data validation patterns.
+
+  detect_prompt: ".delta-lint/my-detect.md"
+    # 検出プロンプト全体のオーバーライド。
+    # - ファイルパス (repo相対): そのファイルを detect.md の代わりに使う
+    # - インライン文字列: そのまま system prompt として使う
+    # 未指定なら .delta-lint/detect.md → 組み込み detect.md の順
+
+  # --- パターン制御 ---
+  disabled_patterns: ["⑦", "⑩"]
+    # スキップするパターン (①〜⑩)
+
+  severity_overrides:
+    # パターンごとの重大度を上書き
+    "④": high
+    "⑧": low
+
+  # --- スコープ制御 ---
+  exclude_paths:
+    # スキャン対象から除外する glob パターン
+    - "vendor/**"
+    - "node_modules/**"
+    - "*.test.ts"
+
+  # --- ドメイン知識 ---
+  architecture:
+    # アーキテクチャコンテキスト。LLM がコード構造を理解する助けになる。
+    - "This is a Next.js app with App Router"
+    - "API routes are in src/app/api/"
+
+  project_rules:
+    # プロジェクト固有のルール。FP を減らすために使う。
+    - "We intentionally use different validation for admin vs user endpoints"
+    - "Legacy API (v1/) is frozen — differences from v2/ are expected"
+
+  # --- 受容ルール ---
+  accepted:
+    # 既知の差異を許容するルール
+    - pattern: "④"
+      files: ["src/legacy/**"]
+      reason: "Legacy code is intentionally different"
+
+  # --- スコアリング重み ---
+  scoring_weights:
+    # defaults ← config.json ← profile の3層マージ。
+    # 指定したキーだけ上書き。未指定はデフォルト値を使う。
+    severity_weight:
+      high: 1.0
+      medium: 0.6
+      low: 0.3
+    pattern_weight:
+      "①": 1.0        # Asymmetric Defaults
+      "②": 1.0        # Semantic Mismatch
+      "③": 0.9        # External Spec Divergence
+      "④": 1.0        # Guard Non-Propagation
+      "⑤": 0.8        # Paired-Setting Override
+      "⑥": 0.9        # Lifecycle Ordering
+      "⑦": 0.3        # Dead Code
+      "⑧": 0.6        # Duplication Drift
+      "⑨": 0.5        # Interface Mismatch
+      "⑩": 0.4        # Missing Abstraction
+    status_multiplier:
+      found: 1.0
+      verified: 1.0
+      submitted: 0.8
+      merged: 0.0      # 解決済み → 負債ゼロ
+      rejected: 0.5
+      wontfix: 0.0
+      duplicate: 0.0
+    fix_cost:
+      "④": 1.0        # ガード追加だけ → 低コスト
+      "⑩": 5.0        # 共通化 → 高コスト
+    churn_thresholds:
+      hot: 3.0         # changes/month >= hot → max weight
+      warm: 0.5
+      max_weight: 10.0
+      min_weight: 0.5
+    fan_out_thresholds:
+      high: 5.0        # fan_out >= high → max weight
+      medium: 2.0
+      max_weight: 10.0
+      min_weight: 1.0
+
+  # --- ダッシュボード ---
+  dashboard_template: ".delta-lint/templates/findings_dashboard.html"
+    # findings ダッシュボードの HTML テンプレート。
+    # - ファイルパス (repo相対): そのファイルをテンプレートとして使う
+    # - 未指定なら .delta-lint/templates/ → 組み込み templates/ の順で探索
+
+  # --- ドキュメント契約面 ---
+  docs: true
+    # コード × ドキュメント矛盾検出を有効化。
+    # - true: auto-discover (README.md, ARCHITECTURE.md, docs/**/*.md)
+    # - リスト: 明示的なファイルパス ["README.md", "docs/api.md"]
+    # - 未指定 or false: ドキュメントチェック無効（デフォルト）
+
+  # --- 負債管理 ---
+  debt_budget: 10.0
+    # Active debt score の上限。CI ゲートで使う。
+    # これを超えるとスキャンが非ゼロ exit する。

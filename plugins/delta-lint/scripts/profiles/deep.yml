@@ -1,0 +1,15 @@
+# deep — 全パターン・全重大度で徹底スキャン
+# Usage: delta scan --profile deep
+
+name: deep
+description: "全パターン・全重大度で徹底スキャン。見逃しゼロを目指す"
+
+config:
+  severity: low
+  semantic: true
+
+policy:
+  prompt_append: |
+    Be extra thorough. Check all 10 patterns carefully.
+    Report even low-confidence findings — the user prefers
+    recall over precision in this mode.

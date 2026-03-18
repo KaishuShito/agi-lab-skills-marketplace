@@ -109,6 +109,12 @@ def build_user_prompt(context: ModuleContext, repo_name: str = "",
         "Look for contradictions BETWEEN different files/functions — "
         "places where one module's assumptions contradict another module's behavior.\n\n"
     )
+    if context.doc_files:
+        header += (
+            "**Document contract surfaces are included below** (marked as DOCUMENT). "
+            "These represent specifications, architecture decisions, or README claims. "
+            "Also check whether the source code contradicts what the documents promise.\n\n"
+        )
 
     prompt = header + context.to_prompt_string()
 
@@ -290,7 +296,8 @@ def detect(context: ModuleContext, repo_name: str = "",
            project_rules: list[str] | None = None,
            repo_path: str = "",
            prompt_append: str = "",
-           disabled_patterns: list[str] | None = None) -> list[dict]:
+           disabled_patterns: list[str] | None = None,
+           detect_prompt: str = "") -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
@@ -306,12 +313,19 @@ def detect(context: ModuleContext, repo_name: str = "",
         repo_path: Optional repo path for loading team prompt override
         prompt_append: Optional text appended to system prompt (from policy)
         disabled_patterns: Optional list of pattern IDs to skip (e.g. ["⑦", "⑩"])
+        detect_prompt: Optional custom system prompt (overrides detect.md entirely)
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
     """
-    system_prompt = load_system_prompt(lang=lang, repo_path=repo_path,
-                                       prompt_append=prompt_append)
+    if detect_prompt:
+        # Profile-provided custom prompt — bypass detect.md loading
+        system_prompt = detect_prompt
+        if prompt_append:
+            system_prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
+    else:
+        system_prompt = load_system_prompt(lang=lang, repo_path=repo_path,
+                                           prompt_append=prompt_append)
     user_prompt = build_user_prompt(context, repo_name, constraints=constraints,
                                     architecture=architecture,
                                     diff_text=diff_text,

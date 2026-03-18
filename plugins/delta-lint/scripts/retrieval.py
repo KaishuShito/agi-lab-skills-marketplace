@@ -74,11 +74,13 @@ class FileContext:
 class ModuleContext:
     target_files: list[FileContext] = field(default_factory=list)
     dep_files: list[FileContext] = field(default_factory=list)
+    doc_files: list[FileContext] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
     def total_chars(self) -> int:
-        return sum(len(f.content) for f in self.target_files + self.dep_files)
+        return sum(len(f.content)
+                   for f in self.target_files + self.dep_files + self.doc_files)
 
     def to_prompt_string(self) -> str:
         parts = []
@@ -92,6 +94,13 @@ class ModuleContext:
                 f"=== {f.path} (DEPENDENCY, confidence={conf_pct}%, {f.dep_tier}) ===\n"
                 f"{f.content}"
             )
+        # Document contract surfaces — specs, ADRs, READMEs
+        if self.doc_files:
+            for f in self.doc_files:
+                parts.append(
+                    f"=== {f.path} (DOCUMENT — treat as specification contract) ===\n"
+                    f"{f.content}"
+                )
         return "\n\n".join(parts)
 
 
@@ -817,10 +826,17 @@ def _find_project_file(repo: Path, candidates: list[str],
     return None
 
 
-def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
+def build_context(
+    repo_path: str,
+    changed_files: list[str],
+    *,
+    retrieval_config: dict | None = None,
+    doc_files: list[str] | None = None,
+) -> ModuleContext:
     """Build module context for LLM detection.
 
     Collects dependencies in tiered order:
+    - Sibling (0.90): from sibling_map.yml — known sibling pairs
     - Tier 1 (same-dir, 0.95): always included
     - Tier 2 (relative, 0.85): always included
     - Tier 3 (project, 0.50): included if budget allows, capped at 2 per file
@@ -831,10 +847,20 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
     Args:
         repo_path: Path to the git repository root
         changed_files: List of changed file paths (relative to repo root)
+        retrieval_config: Override retrieval constants. Supported keys:
+            max_context_chars, max_file_chars, max_deps_per_file, min_confidence
+        doc_files: Optional list of document file paths (relative to repo root)
+            to include as specification contract surfaces (README, ADR, etc.)
 
     Returns:
         ModuleContext with target files and their dependencies
     """
+    rc = retrieval_config or {}
+    _max_context = int(rc.get("max_context_chars", MAX_CONTEXT_CHARS))
+    _max_file = int(rc.get("max_file_chars", MAX_FILE_CHARS))
+    _max_deps = int(rc.get("max_deps_per_file", MAX_DEPS_PER_FILE))
+    _min_conf = float(rc.get("min_confidence", MIN_CONFIDENCE))
+
     ctx = ModuleContext()
     repo = Path(repo_path)
     total_chars = 0
@@ -852,12 +878,45 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
             ctx.warnings.append(f"Could not read: {fpath}")
             continue
 
-        if len(content) > MAX_FILE_CHARS:
+        if len(content) > _max_file:
             ctx.warnings.append(f"Truncated: {fpath} ({len(content)} chars)")
-            content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+            content = content[:_max_file] + "\n... (truncated)"
 
         ctx.target_files.append(FileContext(path=fpath, content=content, is_target=True))
         total_chars += len(content)
+
+    # Step 1.5: Sibling map — add known sibling files before import deps
+    try:
+        from sibling import get_siblings
+        sibling_files = get_siblings(repo_path, changed_files)
+        for sib_path in sibling_files:
+            if sib_path in seen_deps:
+                continue
+            full_path = repo / sib_path
+            if not full_path.exists():
+                continue
+            content = _read_file_safe(full_path)
+            if content is None:
+                continue
+            if total_chars + len(content) > _max_context:
+                ctx.warnings.append(
+                    f"Context limit reached ({total_chars} chars), "
+                    f"skipping remaining sibling deps"
+                )
+                break
+            if len(content) > _max_file:
+                content = content[:_max_file] + "\n... (truncated)"
+            ctx.dep_files.append(FileContext(
+                path=sib_path,
+                content=content,
+                is_target=False,
+                confidence=0.90,
+                dep_tier="sibling-map",
+            ))
+            seen_deps.add(sib_path)
+            total_chars += len(content)
+    except ImportError:
+        pass  # sibling module not available — skip silently
 
     # Step 2: Resolve and read dependencies (1-hop) with tiered confidence
     for target in ctx.target_files:
@@ -870,7 +929,7 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
         sorted_imports = sorted(imports, key=lambda i: (not i.is_relative, i.path))
 
         for imp in sorted_imports:
-            if dep_count >= MAX_DEPS_PER_FILE:
+            if dep_count >= _max_deps:
                 break
 
             # Skip Tier 3 if budget exhausted
@@ -891,18 +950,18 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
             tier = _classify_tier(target.path, imp, candidate)
 
             # Skip below minimum confidence
-            if tier.confidence < MIN_CONFIDENCE:
+            if tier.confidence < _min_conf:
                 continue
 
-            if total_chars + len(content) > MAX_CONTEXT_CHARS:
+            if total_chars + len(content) > _max_context:
                 ctx.warnings.append(
                     f"Context limit reached ({total_chars} chars), "
                     f"skipping remaining deps"
                 )
                 return ctx
 
-            if len(content) > MAX_FILE_CHARS:
-                content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+            if len(content) > _max_file:
+                content = content[:_max_file] + "\n... (truncated)"
 
             ctx.dep_files.append(FileContext(
                 path=candidate,
@@ -936,15 +995,15 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
                 if content is None:
                     continue
 
-                if total_chars + len(content) > MAX_CONTEXT_CHARS:
+                if total_chars + len(content) > _max_context:
                     ctx.warnings.append(
                         f"Context limit reached ({total_chars} chars), "
                         f"skipping remaining hook deps"
                     )
                     break
 
-                if len(content) > MAX_FILE_CHARS:
-                    content = content[:MAX_FILE_CHARS] + "\n... (truncated)"
+                if len(content) > _max_file:
+                    content = content[:_max_file] + "\n... (truncated)"
 
                 ctx.dep_files.append(FileContext(
                     path=dep_file,
@@ -957,6 +1016,36 @@ def build_context(repo_path: str, changed_files: list[str]) -> ModuleContext:
                 total_chars += len(content)
     except Exception:
         pass  # Hook detection is best-effort, never block the scan
+
+    # Step 4: Document contract surfaces (README, ADR, specs)
+    # These are treated as specification contracts — the LLM checks whether
+    # the code contradicts what the documentation promises.
+    if doc_files:
+        for doc_path in doc_files:
+            full_path = repo / doc_path
+            if not full_path.exists():
+                ctx.warnings.append(f"Document not found: {doc_path}")
+                continue
+            content = _read_file_safe(full_path)
+            if content is None:
+                ctx.warnings.append(f"Could not read document: {doc_path}")
+                continue
+            if total_chars + len(content) > _max_context:
+                ctx.warnings.append(
+                    f"Context limit reached ({total_chars} chars), "
+                    f"skipping remaining documents"
+                )
+                break
+            if len(content) > _max_file:
+                content = content[:_max_file] + "\n... (truncated)"
+            ctx.doc_files.append(FileContext(
+                path=doc_path,
+                content=content,
+                is_target=False,
+                confidence=1.0,
+                dep_tier="document",
+            ))
+            total_chars += len(content)
 
     return ctx
 

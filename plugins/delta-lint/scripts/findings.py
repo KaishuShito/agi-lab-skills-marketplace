@@ -1210,6 +1210,7 @@ def generate_dashboard(
     *,
     scan_progress: dict | None = None,
     treemap_json: str | None = None,
+    dashboard_template: str = "",
 ) -> Path:
     """Generate a self-contained HTML dashboard from all findings.
 
@@ -1217,6 +1218,11 @@ def generate_dashboard(
         completed (int), total (int), is_complete (bool)
     When provided and not is_complete, the dashboard includes a progress bar
     and auto-refresh meta tag so the browser shows live updates.
+
+    dashboard_template: override template path. Resolution order:
+        1. This parameter (profile policy.dashboard_template)
+        2. .delta-lint/templates/findings_dashboard.html (repo-local)
+        3. Built-in scripts/templates/findings_dashboard.html
     """
     from string import Template as StrTemplate
 
@@ -1224,7 +1230,18 @@ def generate_dashboard(
     findings = list_findings(base_path)
     stats = get_stats(base_path)
 
-    template_path = Path(__file__).parent / "templates" / "findings_dashboard.html"
+    # Resolve template: explicit override > repo-local > built-in
+    if dashboard_template:
+        tp = Path(dashboard_template)
+        if not tp.is_absolute():
+            tp = base_path / tp
+        template_path = tp if tp.exists() else Path(__file__).parent / "templates" / "findings_dashboard.html"
+    else:
+        repo_local = base_path / ".delta-lint" / "templates" / "findings_dashboard.html"
+        if repo_local.exists():
+            template_path = repo_local
+        else:
+            template_path = Path(__file__).parent / "templates" / "findings_dashboard.html"
     template = StrTemplate(template_path.read_text(encoding="utf-8"))
 
     sev_counts = stats.get("by_severity", {})
