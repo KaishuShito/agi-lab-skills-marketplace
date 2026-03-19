@@ -37,6 +37,7 @@ Only treat it as an error if stderr contains a Python traceback or "Error:" pref
 
 | Workflow | Trigger | Reference |
 |----------|---------|-----------|
+| **Init** | "delta init", "地雷マップ作って", or auto on first scan | [workflow-init.md](references/workflow-init.md) |
 | **Scan** | "delta scan", default | [workflow-scan.md](references/workflow-scan.md) |
 | **Suppress Add** | "suppress {number}" | [workflow-suppress.md](references/workflow-suppress.md) |
 | **Suppress List** | "suppress --list" | [workflow-suppress.md](references/workflow-suppress.md) |
@@ -45,12 +46,13 @@ Only treat it as an error if stderr contains a Python traceback or "Error:" pref
 
 ### Routing logic
 
-1. User says "delta scan" or just `/delta-scan` → **Scan**
-2. User says "suppress" with a number → **Suppress Add**
-3. User says "suppress --list" or "suppress --check" → **Suppress List/Check**
-4. User says "findings" → **Findings**
-5. User says "set-persona pm/qa/engineer" → **Set default persona** (no scan)
-6. If unclear, default to **Scan**
+1. User says "delta init", "地雷マップ作って" → **Init**（リッチ初期化体験）
+2. User says "delta scan" or just `/delta-scan` → **Scan**（初回なら auto-init 後に scan）
+3. User says "suppress" with a number → **Suppress Add**
+4. User says "suppress --list" or "suppress --check" → **Suppress List/Check**
+5. User says "findings" → **Findings**
+6. User says "set-persona pm/qa/engineer" → **Set default persona** (no scan)
+7. If unclear, default to **Scan**
 
 ### Persona mode
 

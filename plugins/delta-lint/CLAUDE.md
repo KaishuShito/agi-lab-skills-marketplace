@@ -2,16 +2,19 @@
 
 ## シンボリックリンク構造（最重要）
 
-マスターはここ。ファイル編集は必ずこのパスで行う:
+マスター（ファイル編集はここ）:
 ```
 agi-lab-skills-marketplace/plugins/delta-lint/scripts/
 ```
 
-以下はシンボリックリンク。**直接編集するな**:
+実行時パス（シンボリックリンク。**直接編集するな**）:
 ```
 ~/.claude/skills/delta-lint/scripts/ → マスターへのリンク
 ~/.claude/skills/delta-scan/scripts/ → マスターへのリンク
 ```
+
+ワークフロー内のコマンド（`cd ~/.claude/skills/delta-lint/scripts && python ...`）は実行時パスを使う。
+コード編集はマスターで行い、symlink 経由で実行時に反映される。
 
 ## アーキテクチャ制約
 
@@ -46,8 +49,9 @@ cli.py          ─── メイン CLI。1600行。関数単位で読め
 │   ├── scoring.py       ─── スコアリング重み（ROI, debt_score）
 │   └── info_theory.py   ─── 情報理論スコアリング（surprise, Chao1）
 ├── surface_extractor.py ─── Deep scan Phase 0（正規表現抽出）
-├── contract_graph.py    ─── Deep scan Phase 1（転置インデックス）
+├── contract_graph.py    ─── Deep scan Phase 1（転置インデックス）— --depth graph はこのパイプライン
 ├── deep_verifier.py     ─── Deep scan Phase 2（LLM 検証）
+│   ※ detect() に depth パラメータはない（意図的設計）。--depth graph は cmd_scan_deep() → contract_graph 経由の別パイプラインで動作
 ├── git_enrichment.py    ─── Git churn/fan_out 計算（スキャン時に finding へ埋め込み）
 ├── output.py            ─── 表示フォーマット
 ├── suppress.py          ─── 抑制管理
@@ -61,7 +65,7 @@ cli.py          ─── メイン CLI。1600行。関数単位で読め
 ```bash
 cd scripts/
 python cli.py scan --repo /path/to/repo         # 通常スキャン
-python cli.py scan --repo /path/to/repo --deep   # Deep scan
+python cli.py scan --repo /path/to/repo --depth graph  # Deep scan（旧: --deep）
 python cli.py findings list --repo /path/to/repo # Findings 一覧
 python cli.py findings dashboard --repo /path    # ダッシュボード生成
 ```

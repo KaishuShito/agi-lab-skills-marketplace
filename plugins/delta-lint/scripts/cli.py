@@ -239,15 +239,41 @@ def _auto_discover_docs(repo_path: str) -> list[str]:
     return found
 
 
-def _load_config(repo_path: str = ".") -> dict:
-    """Load .delta-lint/config.json if it exists. Returns empty dict otherwise."""
-    config_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
-    if config_path.exists():
+def _load_json_safe(path: Path) -> dict:
+    """Read a JSON file, returning empty dict on missing/invalid."""
+    if path.exists():
         try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
     return {}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base* (override wins on conflict)."""
+    merged = dict(base)
+    for k, v in override.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
+def _load_config(repo_path: str = ".") -> dict:
+    """Load config with 2-tier merge: ~/.delta-lint/config.json → .delta-lint/config.json.
+
+    Priority: repo-local > global user > empty dict.
+    """
+    global_config = _load_json_safe(Path.home() / ".delta-lint" / "config.json")
+    local_config = _load_json_safe(
+        Path(repo_path).resolve() / ".delta-lint" / "config.json"
+    )
+    if not global_config:
+        return local_config
+    if not local_config:
+        return global_config
+    return _deep_merge(global_config, local_config)
 
 
 def _load_profile(profile_name: str, repo_path: str = ".") -> dict:
@@ -609,6 +635,14 @@ def _config_init(repo_path: str, interactive: bool = True) -> None:
 def _config_show(repo_path: str) -> None:
     """Show current scoring config (defaults + team overrides)."""
     from scoring import load_scoring_config, diff_from_defaults, validate_config
+
+    # Show config sources
+    global_path = Path.home() / ".delta-lint" / "config.json"
+    local_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
+    print("--- 設定ソース ---", file=sys.stderr)
+    print(f"  global: {global_path} {'✅' if global_path.exists() else '(なし)'}", file=sys.stderr)
+    print(f"  repo:   {local_path} {'✅' if local_path.exists() else '(なし)'}", file=sys.stderr)
+    print(f"  優先度: CLI > profile > repo > global > defaults\n", file=sys.stderr)
 
     cfg = load_scoring_config(repo_path)
     print(json.dumps({"scoring": cfg.to_dict()}, indent=2, ensure_ascii=False))
@@ -1033,6 +1067,9 @@ def cmd_init(args):
                     scan_type="existing",
                     finding_ids=all_fids,
                     patterns_found=all_patterns,
+                    scope="smart",
+                    depth="1hop",
+                    lens="default",
                 )
             except Exception:
                 pass
@@ -1045,8 +1082,10 @@ def cmd_init(args):
     print("\n── δ-lint ── 初期化完了 ✅", file=sys.stderr)
     print("  次のステップ:", file=sys.stderr)
     print("    delta view          — ダッシュボードを開く", file=sys.stderr)
-    print("    delta scan          — 変更ファイルをスキャン", file=sys.stderr)
-    print("    delta scan --full   — ストレステスト（地雷マップ生成）", file=sys.stderr)
+    print("    delta scan                    — 変更ファイルをスキャン", file=sys.stderr)
+    print("    delta scan --scope all        — 全ファイルスキャン", file=sys.stderr)
+    print("    delta scan --lens stress      — ストレステスト（地雷マップ生成）", file=sys.stderr)
+    print("    delta scan --lens security    — セキュリティ重点スキャン", file=sys.stderr)
     print("    delta init          — 再実行でカバレッジ拡大", file=sys.stderr)
 
 
@@ -1374,12 +1413,23 @@ def cmd_scan(args):
     repo_path = str(Path(args.repo).resolve())
     repo_name = Path(repo_path).name
 
-    # Step 1: Identify target files
+    # Step 1: Identify target files (driven by args._scope)
+    scope = getattr(args, '_scope', 'diff')
     if args.files:
         source_files = args.files
         if args.verbose:
             print(f"Scanning {len(source_files)} specified file(s)", file=sys.stderr)
-    elif getattr(args, 'smart', False):
+    elif scope == "all":
+        # All source files in repo
+        from surface_extractor import collect_all_source_files
+        all_files = collect_all_source_files(repo_path)
+        source_files = all_files if all_files else []
+        if not source_files:
+            print("No source files found in repository.", file=sys.stderr)
+            sys.exit(0)
+        if args.verbose:
+            print(f"Scope=all: scanning all {len(source_files)} source file(s)", file=sys.stderr)
+    elif scope == "smart" or getattr(args, 'smart', False):
         # Smart mode: select files by git history priority with batching
         # Run each batch as a separate subprocess with --files
         from retrieval import get_priority_batches
@@ -1646,7 +1696,8 @@ def cmd_scan(args):
                            repo_path=repo_path,
                            prompt_append=prompt_append,
                            disabled_patterns=disabled_patterns,
-                           detect_prompt=detect_prompt_override)
+                           detect_prompt=detect_prompt_override,
+                           lens=getattr(args, '_lens', 'default'))
 
         if args.verbose:
             print(f"  Raw findings: {len(findings)}", file=sys.stderr)
@@ -1815,13 +1866,22 @@ def cmd_scan(args):
             scan_fids.append(fid)
             if f.get("pattern"):
                 scan_patterns.append(f["pattern"])
+        # Resolve scan_type from 3-axis model for backward compat
+        _scan_type = "diff"
+        if scope == "smart":
+            _scan_type = "existing"
+        elif scope == "all":
+            _scan_type = "deep" if getattr(args, '_depth', '1hop') == "graph" else "existing"
         append_scan_history(
             repo_path,
             clusters=len(context.target_files),
             findings_count=len(result.shown),
-            scan_type="diff",
+            scan_type=_scan_type,
             finding_ids=scan_fids,
             patterns_found=scan_patterns,
+            scope=scope,
+            depth=getattr(args, '_depth', '1hop'),
+            lens=getattr(args, '_lens', 'default'),
         )
     except Exception:
         pass
@@ -1906,8 +1966,8 @@ def cmd_view(args):
     regenerate = getattr(args, "regenerate", False)
 
     if dash_path.exists() and not regenerate:
-        import webbrowser
-        webbrowser.open(f"file://{dash_path}")
+        import subprocess as _sp
+        _sp.Popen(["open", str(dash_path)])
         print(f"✓ ダッシュボード: {dash_path}")
         return
 
@@ -1920,15 +1980,15 @@ def cmd_view(args):
         from visualize import build_treemap_json
         treemap_json = build_treemap_json(str(results_path))
 
-    findings_jsonl = delta_dir / "findings" / "findings.jsonl"
-    if not findings_jsonl.exists() and treemap_json is None:
+    has_findings = any((delta_dir / "findings").glob("*.jsonl")) if (delta_dir / "findings").exists() else False
+    if not has_findings and treemap_json is None:
         print("⚠ データがありません。delta scan を実行してください。", file=sys.stderr)
         sys.exit(1)
 
     _dash_tpl = getattr(args, '_dashboard_template', "")
     out = generate_dashboard(str(repo_path), treemap_json=treemap_json, dashboard_template=_dash_tpl)
-    import webbrowser
-    webbrowser.open(f"file://{out}")
+    import subprocess as _sp
+    _sp.Popen(["open", str(out)])
     print(f"✓ ダッシュボード (再生成): {out}")
 
 
@@ -2129,6 +2189,44 @@ def _suppress_add(repo_path: str, args):
 # main — subcommand routing
 # ---------------------------------------------------------------------------
 
+
+def _normalize_scan_axes(args):
+    """Normalize legacy flags (--smart, --deep, --full) to 3-axis model.
+
+    Sets args._scope, args._depth, args._lens as resolved values.
+    Explicit --scope/--depth/--lens always take priority over legacy flags.
+    """
+    # Scope: --scope > --smart > default(diff)
+    if args.scope is not None:
+        args._scope = args.scope
+    elif getattr(args, 'smart', False):
+        args._scope = "smart"
+    elif getattr(args, 'files', None):
+        args._scope = "files"  # explicit file list
+    else:
+        args._scope = "diff"
+
+    # Depth: --depth > --deep > default(1hop)
+    if args.depth is not None:
+        args._depth = args.depth
+    elif getattr(args, 'deep', False):
+        args._depth = "graph"
+    else:
+        args._depth = "1hop"
+
+    # Lens: --lens > --full > default
+    if args.lens is not None:
+        args._lens = args.lens
+    elif getattr(args, 'full', False):
+        args._lens = "stress"
+    else:
+        args._lens = "default"
+
+    if getattr(args, 'verbose', False):
+        print(f"  Scan axes: scope={args._scope} depth={args._depth} lens={args._lens}",
+              file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="delta-lint: Detect structural contradictions in source code",
@@ -2210,14 +2308,32 @@ def main():
              "Enable via CLI flag or config.json {\"autofix\": true}.",
     )
     scan_parser.add_argument(
+        "--scope", default=None,
+        choices=["diff", "smart", "all"],
+        help="Scan scope: diff (changed files, default), smart (git history priority), "
+             "all (entire codebase). Replaces --smart flag.",
+    )
+    scan_parser.add_argument(
+        "--depth", default=None,
+        choices=["1hop", "graph"],
+        help="Context depth: 1hop (import-based 1-hop deps, default), "
+             "graph (contract graph analysis via surface extraction).",
+    )
+    scan_parser.add_argument(
+        "--lens", default=None,
+        choices=["default", "stress", "security"],
+        help="Detection lens: default (contradiction+debt patterns), "
+             "stress (virtual modification stress-test), "
+             "security (security-focused pattern detection).",
+    )
+    # Legacy aliases (backward compat)
+    scan_parser.add_argument(
         "--smart", action="store_true", default=False,
-        help="Smart file selection: prioritize files by git history "
-             "(churn × recency × fan-out). No diff required.",
+        help=argparse.SUPPRESS,  # hidden: use --scope smart
     )
     scan_parser.add_argument(
         "--full", action="store_true", default=False,
-        help="Run full stress-test (virtual modifications × N). "
-             "Generates landmine map. Takes 10-30 minutes.",
+        help=argparse.SUPPRESS,  # hidden: use --lens stress
     )
     scan_parser.add_argument(
         "--diff-only", action="store_true", default=False,
@@ -2259,9 +2375,7 @@ def main():
     )
     scan_parser.add_argument(
         "--deep", action="store_true", default=False,
-        help="Deep scan: regex-based surface extraction + contract graph analysis + "
-             "LLM verification. Detects hook arg mismatches, orphan hooks, constant "
-             "conflicts, missing parent classes. No diff required.",
+        help=argparse.SUPPRESS,  # hidden: use --depth graph
     )
     scan_parser.add_argument(
         "--deep-workers", type=int, default=4,
@@ -2528,12 +2642,14 @@ def main():
         args.command = "scan"
 
     if args.command == "scan":
+        # Normalize legacy flags to 3-axis model
+        _normalize_scan_axes(args)
         if getattr(args, 'watch', False):
             cmd_watch(args)
-        elif getattr(args, 'deep', False):
-            cmd_scan_deep(args)
-        elif getattr(args, 'full', False):
+        elif args._lens == "stress":
             cmd_scan_full(args)
+        elif args._depth == "graph":
+            cmd_scan_deep(args)
         else:
             cmd_scan(args)
     elif args.command == "init":

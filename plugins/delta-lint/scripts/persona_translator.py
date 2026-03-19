@@ -129,16 +129,22 @@ def _fallback_qa(findings: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def load_default_persona(repo_path: str = ".") -> str:
-    """Load default persona from .delta-lint/config.json."""
-    config_path = Path(repo_path) / ".delta-lint" / "config.json"
-    if config_path.exists():
-        try:
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-            persona = config.get("persona", "engineer")
-            if persona in PERSONAS:
-                return persona
-        except (json.JSONDecodeError, OSError):
-            pass
+    """Load default persona from config (global → repo-local).
+
+    Priority: repo .delta-lint/config.json > ~/.delta-lint/config.json > "engineer"
+    """
+    for config_path in [
+        Path(repo_path) / ".delta-lint" / "config.json",
+        Path.home() / ".delta-lint" / "config.json",
+    ]:
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                persona = config.get("persona")
+                if persona and persona in PERSONAS:
+                    return persona
+            except (json.JSONDecodeError, OSError):
+                pass
     return "engineer"
 
 

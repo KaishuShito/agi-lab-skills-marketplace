@@ -6,22 +6,14 @@
 ls {repo_path}/.delta-lint/stress-test/structure.json 2>/dev/null
 ```
 
-If `.delta-lint/` does not exist or structure.json is missing, **auto-initialize before scanning**:
+If `.delta-lint/` does not exist or structure.json is missing:
 
-```
-── δ-lint ── 初回セットアップ（自動）
-```
+→ **[workflow-init.md](workflow-init.md) の全フローを実行する。**
 
-Then run:
+初回スキャン時にリッチな初期化体験（構造分析→ホットスポット表示→既存バグ検出→ストレステスト→ヒートマップ）を自動提供する。
+ユーザーが「delta init」と明示的に言った場合も同じフローが走る。
 
-```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py init --repo "{repo_path}" --verbose 2>&1
-```
-
-This runs: git history analysis → structure analysis → existing scan → findings save → dashboard generation.
-Timeout: 300000 (5 min). **Do NOT ask for confirmation — just run it.**
-
-After init completes, proceed to Step 0 (scan as normal).
+init 完了後、Step 0 に進んでスキャンを続行する。
 
 If `.delta-lint/` already exists, skip this step entirely.
 

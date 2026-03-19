@@ -6,13 +6,15 @@ The suppress mechanism allows users to mark specific findings as intentional, hi
 
 ## Key Concepts
 
-### finding_hash (Stable Identification)
+### finding_hash (Stable Identification) — suppress 専用マッチングキー
 - Hash of **sorted file paths + rounded line numbers**
 - **NOT** based on LLM text output (which varies between runs)
 - Files are sorted alphabetically for order-independence
 - Line numbers rounded to 5-line buckets to absorb LLM variance of +/-4 lines
 - Falls back to files-only hash when line numbers unavailable
 - First 8 hex chars of SHA-256
+
+> **⚠️ `finding_hash` ≠ `generate_id()`**: findings JSONL のレコード ID (`generate_id()`) は `repo + files + pattern` から生成される。suppress の `finding_hash` は `files + rounded line numbers` から生成される。**別スキーム・別用途**。suppress のマッチングは `finding_hash` のみで完結し、findings の `id` フィールドは使わない。
 
 ### code_hash (Auto-Expiration)
 - Hash of +/-10 lines surrounding the target location

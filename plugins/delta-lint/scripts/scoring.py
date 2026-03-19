@@ -5,11 +5,10 @@ Single source of truth for all scoring weights.
 Defaults are hardcoded here; teams can override via .delta-lint/config.json.
 
 Scale design:
-    debt_score:  0 〜 1000  (severity × pattern × status × DEBT_SCALE)
-    roi_score:   0 〜 数千   (severity × churn × fan_out / fix_cost × ROI_SCALE)
-    info_score:  0 〜 数千   (surprise × entropy × channel / fix_cost × INFO_SCALE)
-
-    大きい数字のほうが直感的。「負債 600」「解消価値 3500」。
+    debt_coefficient: 0 〜 1.0  (severity × pattern × status — 静的な重さ)
+    context_score:    0 〜 数千  (churn × fan_out × user_facing × age / fix_cost × ROI_SCALE — 文脈)
+    technical_debt:   0 〜 数千  (debt_coefficient × context_score — 統合指標)
+    info_score:       0 〜 数千  (surprise × entropy × channel / fix_cost × INFO_SCALE)
 
 Usage:
     from scoring import load_scoring_config
@@ -28,8 +27,7 @@ from pathlib import Path
 # Scale multipliers — 各スコアの出力レンジを制御
 # ---------------------------------------------------------------------------
 
-DEBT_SCALE = 1000       # debt_score: 0〜1000
-ROI_SCALE = 100         # roi_score: 0〜数千（churn/fan_out が大きいと数千に達する）
+ROI_SCALE = 100         # context_score: 0〜数千（churn/fan_out が大きいと数千に達する）
 INFO_SCALE = 100        # info_score: 0〜数千（同上）
 
 # ---------------------------------------------------------------------------
@@ -107,6 +105,25 @@ DEFAULT_FIX_COST: dict[str, float] = {
     "_default": 1.5,
 }
 
+# ---------------------------------------------------------------------------
+# User-facing weight — ユーザーに直接見える問題は優先度を上げる
+# ---------------------------------------------------------------------------
+DEFAULT_USER_FACING_WEIGHT: dict[str, float] = {
+    "user_facing": 1.5,    # UI表示、エラーメッセージ、API応答に影響
+    "internal": 1.0,       # 内部ロジック、ログ、設定
+    "_default": 1.0,
+}
+
+# ---------------------------------------------------------------------------
+# Age acceleration — 放置コストの複利効果
+# 経過日数 → 加速係数。30日で×1、90日で×1.6、180日で×2、365日で×2.5
+# log(1 + days/30) ベース。config.json で base_days / max_multiplier を上書き可能。
+# ---------------------------------------------------------------------------
+DEFAULT_AGE_ACCELERATION: dict[str, float] = {
+    "base_days": 30.0,       # この日数で加速係数 1.0（ベースライン）
+    "max_multiplier": 3.0,   # 上限。無限に上がらないようにキャップ
+}
+
 
 @dataclass
 class ScoringConfig:
@@ -118,6 +135,8 @@ class ScoringConfig:
     churn_thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_CHURN_THRESHOLDS))
     fan_out_thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_FAN_OUT_THRESHOLDS))
     fix_cost: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_FIX_COST))
+    user_facing_weight: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_USER_FACING_WEIGHT))
+    age_acceleration: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_AGE_ACCELERATION))
 
     def to_dict(self) -> dict:
         """Serialize to dict for config.json export."""
@@ -128,6 +147,8 @@ class ScoringConfig:
             "churn_thresholds": dict(self.churn_thresholds),
             "fan_out_thresholds": dict(self.fan_out_thresholds),
             "fix_cost": dict(self.fix_cost),
+            "user_facing_weight": dict(self.user_facing_weight),
+            "age_acceleration": dict(self.age_acceleration),
         }
 
 
@@ -158,17 +179,23 @@ def load_scoring_config(
     overrides on top. Missing keys use defaults. Unknown keys are
     preserved (forward-compat).
     """
-    config_path = Path(repo_path).resolve() / ".delta-lint" / "config.json"
-    scoring_overrides: dict = {}
+    def _load_json_safe(p: Path) -> dict:
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        return {}
 
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            scoring_overrides = data.get("scoring", {})
-        except (OSError, json.JSONDecodeError):
-            pass
+    global_scoring = _load_json_safe(
+        Path.home() / ".delta-lint" / "config.json"
+    ).get("scoring", {})
+    local_scoring = _load_json_safe(
+        Path(repo_path).resolve() / ".delta-lint" / "config.json"
+    ).get("scoring", {})
+    scoring_overrides = _merge_weights(global_scoring, local_scoring)
 
-    # 3-tier merge: defaults ← config.json ← profile
+    # 4-tier merge: defaults ← global config ← repo config ← profile
     def _resolve(key: str, defaults: dict) -> dict:
         merged = _merge_weights(defaults, scoring_overrides.get(key, {}))
         if profile_overrides and key in profile_overrides:
@@ -182,6 +209,8 @@ def load_scoring_config(
         churn_thresholds=_resolve("churn_thresholds", DEFAULT_CHURN_THRESHOLDS),
         fan_out_thresholds=_resolve("fan_out_thresholds", DEFAULT_FAN_OUT_THRESHOLDS),
         fix_cost=_resolve("fix_cost", DEFAULT_FIX_COST),
+        user_facing_weight=_resolve("user_facing_weight", DEFAULT_USER_FACING_WEIGHT),
+        age_acceleration=_resolve("age_acceleration", DEFAULT_AGE_ACCELERATION),
     )
 
 
@@ -206,6 +235,8 @@ def diff_from_defaults(cfg: ScoringConfig) -> dict[str, dict[str, tuple[float, f
         "churn_thresholds": DEFAULT_CHURN_THRESHOLDS,
         "fan_out_thresholds": DEFAULT_FAN_OUT_THRESHOLDS,
         "fix_cost": DEFAULT_FIX_COST,
+        "user_facing_weight": DEFAULT_USER_FACING_WEIGHT,
+        "age_acceleration": DEFAULT_AGE_ACCELERATION,
     }
     current = {
         "severity_weight": cfg.severity_weight,
@@ -214,6 +245,8 @@ def diff_from_defaults(cfg: ScoringConfig) -> dict[str, dict[str, tuple[float, f
         "churn_thresholds": cfg.churn_thresholds,
         "fan_out_thresholds": cfg.fan_out_thresholds,
         "fix_cost": cfg.fix_cost,
+        "user_facing_weight": cfg.user_facing_weight,
+        "age_acceleration": cfg.age_acceleration,
     }
     diffs: dict[str, dict[str, tuple[float, float]]] = {}
     for section, default_dict in defaults.items():
@@ -294,6 +327,72 @@ def pattern_fix_cost(pattern: str, cfg: ScoringConfig | None = None) -> float:
     return fc.get(pattern, fc.get("_default", 1.5))
 
 
+def user_facing_to_weight(user_facing: bool, cfg: ScoringConfig | None = None) -> float:
+    """ユーザーに直接見える問題かどうかで重みを返す。
+
+    user_facing=True → UI/エラーメッセージ/API応答に影響 → 1.5x
+    user_facing=False → 内部ロジック → 1.0x
+    """
+    w = (cfg or ScoringConfig()).user_facing_weight
+    if user_facing:
+        return w.get("user_facing", 1.5)
+    return w.get("internal", w.get("_default", 1.0))
+
+
+def age_to_multiplier(found_at: str, churn_6m: int = 0, cfg: ScoringConfig | None = None) -> float:
+    """放置期間 × 周辺活発度から加速係数を計算。
+
+    「古い」だけでは加速しない。周辺が活発に変更されているのに
+    この finding だけ放置されている = 地雷化 → 加速。
+    churn=0（誰も触らないファイル）なら age は効かない。
+
+    formula: 1 + log₂(1 + days / base_days) × churn_ratio
+    churn_ratio = min(churn_6m / hot_threshold, 1.0)
+    """
+    import math
+    if not found_at or churn_6m <= 0:
+        return 1.0
+    try:
+        from datetime import datetime
+        found = datetime.strptime(found_at[:10], "%Y-%m-%d")
+        now = datetime.now()
+        days = max((now - found).days, 0)
+    except (ValueError, TypeError):
+        return 1.0
+
+    a = (cfg or ScoringConfig()).age_acceleration
+    base_days = a.get("base_days", 30.0)
+    max_mult = a.get("max_multiplier", 3.0)
+    if base_days <= 0:
+        return 1.0
+
+    # churn が高いほど age の効きが強い（周辺活発 × 放置 = 地雷）
+    c = (cfg or ScoringConfig()).churn_thresholds
+    hot = c.get("hot", 3.0) * 6
+    churn_ratio = min(churn_6m / max(hot, 1), 1.0)
+
+    raw_age = math.log2(1 + days / base_days)
+    mult = 1.0 + raw_age * churn_ratio
+    return round(min(mult, max_mult), 2)
+
+
+def debt_coefficient(
+    severity: str,
+    pattern: str,
+    status: str = "found",
+    cfg: ScoringConfig | None = None,
+) -> float:
+    """負債係数: severity × pattern × status → 0〜1.0。
+
+    静的な重さ。文脈（churn, fan_out 等）は含まない。
+    """
+    c = cfg or ScoringConfig()
+    sev = c.severity_weight.get(severity, 0.3)
+    pat = c.pattern_weight.get(pattern, 0.5)
+    sta = c.status_multiplier.get(status, 1.0)
+    return round(sev * pat * sta, 3)
+
+
 def compute_roi(
     severity: str,
     churn_6m: int,
@@ -301,22 +400,21 @@ def compute_roi(
     pattern: str,
     cfg: ScoringConfig | None = None,
     fix_churn_6m: int | None = None,
+    user_facing: bool = False,
+    found_at: str = "",
+    status: str = "found",
 ) -> dict:
-    """Compute 解消価値 (resolution ROI) for a finding.
+    """Compute context score and technical debt for a finding.
 
-    Formula: severity × churn_weight × fan_out_weight / fix_cost × ROI_SCALE
+    context_score = churn × fan_out × user_facing × age / fix_cost × ROI_SCALE
+    debt_coefficient = severity × pattern × status  (0〜1.0)
+    technical_debt = debt_coefficient × context_score
 
-    churn_weight は fix_churn_6m（バグ修正コミット数）があればそちらを優先使用。
-    fix_churn はバグ修正に関連するコミットのみカウントするため、
-    機能追加で膨らんだ churn よりも「壊れやすさ」の精度が高い。
-
-    出力レンジ: 0 〜 数千。
-    典型例:
-      high severity + hot fix_churn + 5 fan_out + ④ガード追加 → ~10000
-      low severity + cold churn + 1 fan_out + ⑩共通化         → ~3
+    context_score は文脈のみ（ファイルの活発度、影響範囲、修正コスト）。
+    debt_coefficient は静的な重さ（深刻度、パターン、ステータス）。
+    掛け合わせた technical_debt が統合指標。
     """
     c = cfg or ScoringConfig()
-    sev_w = c.severity_weight.get(severity, 0.3)
 
     # fix_churn_6m があればそちらで churn_weight を計算（精度が高い）
     effective_churn = fix_churn_6m if fix_churn_6m is not None else churn_6m
@@ -324,8 +422,12 @@ def compute_roi(
 
     fan_w = fan_out_to_weight(fan_out, c)
     fix_c = pattern_fix_cost(pattern, c)
+    uf_w = user_facing_to_weight(user_facing, c)
+    age_w = age_to_multiplier(found_at, effective_churn, c)
 
-    score = round(sev_w * churn_w * fan_w / max(fix_c, 0.1) * ROI_SCALE, 1)
+    context = round(churn_w * fan_w * uf_w * age_w / max(fix_c, 0.1) * ROI_SCALE, 1)
+    dc = debt_coefficient(severity, pattern, status, c)
+    tech_debt = round(dc * context, 1)
 
     return {
         "churn_6m": churn_6m,
@@ -334,5 +436,11 @@ def compute_roi(
         "fan_out": fan_out,
         "fan_out_weight": fan_w,
         "fix_cost": fix_c,
-        "roi_score": score,
+        "user_facing": user_facing,
+        "user_facing_weight": uf_w,
+        "age_days": 0,  # filled by caller if available
+        "age_multiplier": age_w,
+        "debt_coefficient": dc,
+        "context_score": context,
+        "roi_score": tech_debt,  # 後方互換: roi_score キーを維持
     }

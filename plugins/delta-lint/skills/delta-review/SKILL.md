@@ -38,6 +38,7 @@ All scripts are in: `scripts/` (relative to the plugin root).
 - Examples: 「〇〇を追加したい」「〇〇を実装して」「これ修正して」「こういう機能作りたい」「これ実装できる？」「追加するとき気をつけることは？」
 - → Lightweight pre-check: [workflow-autocheck.md](references/workflow-autocheck.md)
 - **確認を求めない。止めない。チェック結果を出してそのまま作業に入る。**
+- 関連する地雷マップ/findings データがなければ **何も出力せず silent pass**（ユーザーの作業を止めない）
 
 ## Quick Reference
 

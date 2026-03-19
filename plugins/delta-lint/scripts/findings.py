@@ -33,6 +33,7 @@ VALID_STATUSES = (
     "rejected",     # メンテナに却下された
     "wontfix",      # 意図的な設計
     "duplicate",    # 既知の問題
+    "false_positive",  # 偽陽性（コード確認で否定）
 )
 
 
@@ -49,9 +50,7 @@ VALID_STATUSES = (
 # Weights are centralized in scoring.py. Module-level references for
 # backward compatibility and use in contexts without repo_path.
 from scoring import (
-    DEFAULT_SEVERITY_WEIGHT as SEVERITY_WEIGHT,
     DEFAULT_STATUS_MULTIPLIER as STATUS_MULTIPLIER,
-    DEFAULT_PATTERN_WEIGHT as PATTERN_WEIGHT,
     ScoringConfig,
     load_scoring_config,
     compute_roi,
@@ -59,31 +58,21 @@ from scoring import (
 
 
 def finding_debt_score(f: dict, cfg: ScoringConfig | None = None) -> float:
-    """Calculate debt score for a single finding.
+    """Calculate debt coefficient for a single finding (0〜1.0).
 
-    score = severity_weight × pattern_weight × status_multiplier × DEBT_SCALE
+    debt_coefficient = severity × pattern × status
     merged/wontfix → 0 (resolved), but history remains in JSONL.
-
-    出力レンジ: 0 〜 1000。
-    典型例:
-      high + ① + found   → 1000
-      medium + ④ + found → 600
-      low + ⑦ + found    → 90
-      any + merged        → 0
 
     If cfg is provided, uses team-customized weights from config.json.
     Otherwise uses built-in defaults.
     """
-    from scoring import DEBT_SCALE
-
-    sw = cfg.severity_weight if cfg else SEVERITY_WEIGHT
-    pw = cfg.pattern_weight if cfg else PATTERN_WEIGHT
-    sm = cfg.status_multiplier if cfg else STATUS_MULTIPLIER
-
-    sev = sw.get(f.get("severity", "low"), 0.3)
-    pat = pw.get(f.get("pattern", ""), 0.5)
-    status = sm.get(f.get("status", "found"), 1.0)
-    return round(sev * pat * status * DEBT_SCALE, 1)
+    from scoring import debt_coefficient as _dc
+    return _dc(
+        f.get("severity", "low"),
+        f.get("pattern", ""),
+        f.get("status", "found"),
+        cfg,
+    )
 
 
 def compute_debt_summary(findings: list[dict], cfg: ScoringConfig | None = None) -> dict:
@@ -118,11 +107,15 @@ def append_scan_history(
     scan_type: str = "existing",  # "existing" | "diff" | "stress" | "deep"
     finding_ids: list[str] | None = None,
     patterns_found: list[str] | None = None,
+    scope: str = "",    # 3-axis: "diff" | "smart" | "all"
+    depth: str = "",    # 3-axis: "1hop" | "graph"
+    lens: str = "",     # 3-axis: "default" | "stress" | "security"
 ) -> None:
     """Append a scan record to scan_history.jsonl.
 
     finding_ids: Chao1 推定に使用。このスキャンで検出された finding ID 一覧。
     patterns_found: パターン別 surprise 計算に使用。検出されたパターン番号一覧。
+    scope/depth/lens: 3-axis scan model。coverage matrix で使用。
     """
     path = Path(base_path) / SCAN_HISTORY_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,6 +126,27 @@ def append_scan_history(
         "findings_count": findings_count,
         "duration_sec": round(duration_sec, 1),
     }
+    # 3-axis fields (infer from scan_type if not explicitly provided)
+    if scope:
+        record["scope"] = scope
+    elif scan_type == "diff":
+        record["scope"] = "diff"
+    elif scan_type in ("existing", "deep"):
+        record["scope"] = "smart"
+    elif scan_type == "stress":
+        record["scope"] = "all"
+    if depth:
+        record["depth"] = depth
+    elif scan_type == "deep":
+        record["depth"] = "graph"
+    else:
+        record["depth"] = "1hop"
+    if lens:
+        record["lens"] = lens
+    elif scan_type == "stress":
+        record["lens"] = "stress"
+    else:
+        record["lens"] = "default"
     if finding_ids is not None:
         record["finding_ids"] = finding_ids
     if patterns_found is not None:
@@ -185,6 +199,121 @@ def compute_scan_depth(base_path: str | Path) -> dict:
         "total_clusters": total_clusters,
         "grade": grade,
         "last_scan": last_scan,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Coverage matrix (scope × depth × lens)
+# ---------------------------------------------------------------------------
+
+# Map legacy scan_type to 3-axis model
+_SCAN_TYPE_TO_AXES = {
+    "diff":     {"scope": "diff",  "depth": "1hop",  "lens": "default"},
+    "existing": {"scope": "smart", "depth": "1hop",  "lens": "default"},
+    "deep":     {"scope": "all",   "depth": "graph", "lens": "default"},
+    "stress":   {"scope": "all",   "depth": "1hop",  "lens": "stress"},
+}
+
+# All valid axis values
+_SCOPES = ["diff", "smart", "all"]
+_DEPTHS = ["1hop", "graph"]
+_LENSES = ["default", "stress", "security"]
+
+# Human-readable labels
+_SCOPE_LABELS = {"diff": "変更差分", "smart": "履歴優先", "all": "全ファイル"}
+_DEPTH_LABELS = {"1hop": "1-hop依存", "graph": "構造グラフ"}
+_LENS_LABELS = {"default": "構造矛盾検査", "stress": "ストレステスト", "security": "セキュリティ"}
+
+# Command fragments per axis value
+_SCOPE_FLAGS = {"diff": "", "smart": "--scope smart", "all": "--scope all"}
+_DEPTH_FLAGS = {"1hop": "", "graph": "--depth graph"}
+_LENS_FLAGS = {"default": "", "stress": "--lens stress", "security": "--lens security"}
+
+
+def compute_coverage_matrix(base_path: str | Path) -> dict:
+    """Compute a 3-axis coverage matrix from scan history.
+
+    Unified matrix: rows = scope × depth (6 rows), cols = lens (3 cols) = 18 cells.
+
+    Returns:
+        {
+            "cells": [
+                {
+                    "scope": "diff", "depth": "1hop", "lens": "default",
+                    "scope_label": "変更差分", "depth_label": "1-hop依存", "lens_label": "矛盾+負債",
+                    "count": 3, "last_run": "2026-03-19 14:30",
+                    "command": "delta scan",
+                    "is_flow": true,
+                },
+                ...
+            ],
+            "cells_done": 3,     # 実行済みセル数
+            "cells_total": 18,   # 全セル数
+        }
+    """
+    history = load_scan_history(Path(base_path))
+
+    # Count per (scope, depth, lens) combination
+    counts: dict[tuple, list] = {}
+    for record in history:
+        scan_type = record.get("scan_type", "diff")
+        # Support new-style records with explicit axes
+        if "scope" in record:
+            axes = {
+                "scope": record["scope"],
+                "depth": record.get("depth", "1hop"),
+                "lens": record.get("lens", "default"),
+            }
+        else:
+            axes = _SCAN_TYPE_TO_AXES.get(scan_type, _SCAN_TYPE_TO_AXES["diff"])
+        key = (axes["scope"], axes["depth"], axes["lens"])
+        counts.setdefault(key, []).append(record.get("timestamp", ""))
+
+    cells = []
+    cells_done = 0
+
+    for scope in _SCOPES:
+        for depth in _DEPTHS:
+            for lens in _LENSES:
+                key = (scope, depth, lens)
+                records = counts.get(key, [])
+                count = len(records)
+                last_run = ""
+                if records:
+                    last_ts = sorted(records)[-1]
+                    last_run = last_ts[:16].replace("T", " ") if last_ts else ""
+
+                # Build command
+                flags = [f for f in [
+                    _SCOPE_FLAGS.get(scope, ""),
+                    _DEPTH_FLAGS.get(depth, ""),
+                    _LENS_FLAGS.get(lens, ""),
+                ] if f]
+                command = "delta scan" + (" " + " ".join(flags) if flags else "")
+
+                cell = {
+                    "scope": scope,
+                    "depth": depth,
+                    "lens": lens,
+                    "scope_label": _SCOPE_LABELS[scope],
+                    "depth_label": _DEPTH_LABELS[depth],
+                    "lens_label": _LENS_LABELS[lens],
+                    "count": count,
+                    "last_run": last_run,
+                    "command": command,
+                    "is_flow": (scope == "diff"),
+                }
+                cells.append(cell)
+
+                if count > 0:
+                    cells_done += 1
+
+    cells_total = len(_SCOPES) * len(_DEPTHS) * len(_LENSES)  # 18
+
+    return {
+        "cells": cells,
+        "cells_done": cells_done,
+        "cells_total": cells_total,
     }
 
 
@@ -854,6 +983,9 @@ def _findings_verify_top(base_path: str, args) -> None:
                 fan_out=f.get("fan_out", 0),
                 pattern=f.get("pattern", ""),
                 fix_churn_6m=f.get("fix_churn_6m"),
+                user_facing=bool(f.get("user_facing")),
+                found_at=f.get("found_at", ""),
+                status=f.get("status", "found"),
             ).get("roi_score", 0)
         except Exception:
             roi = 0
@@ -1048,6 +1180,7 @@ def ingest_stress_test_debt(base_path: str | Path) -> list[str]:
             found_by="stress-test",
             category="debt",
             tags=["stress-test", "structural-fragility"],
+            taxonomies={"certainty": "uncertain", "category": "debt"},
         )
 
         try:
@@ -1247,68 +1380,67 @@ def generate_dashboard(
     sev_counts = stats.get("by_severity", {})
     status_counts = stats.get("by_status", {})
 
-    # KPI: 確実バグ = high severity（LLMが確信）or 手動verified
-    # 調査中 = medium/low の未解決 findings
-    resolved_statuses = {"merged", "wontfix", "duplicate", "rejected"}
+    # KPI: 検証済み = 人間が status を verified に変更したもののみ
+    # 未検証 = found のまま残っている findings
+    resolved_statuses = {"merged", "wontfix", "duplicate", "rejected", "false_positive"}
     confirmed_bugs = sum(
         1 for f in findings
-        if f.get("verified") is True
-        or f.get("severity") == "high"
+        if f.get("status") == "verified"
     )
     investigating = sum(
         1 for f in findings
-        if f.get("severity") != "high"
-        and not f.get("verified")
-        and f.get("status", "found") not in resolved_statuses
+        if f.get("status", "found") == "found"
     )
-    # ROI合計を技術的負債の指標として使用（active findings のみ）
-    # compute_roi は後で実行するため、ここでは仮計算
-    _tmp_cfg = load_scoring_config(base_path)
-    _churn = _load_churn_map(base_path)
-    _fan = _load_fan_out_map(base_path)
-    debt_count = round(sum(
-        compute_roi(
-            f.get("severity", "low"),
-            _churn.get(_finding_file(f), 0),
-            _fan.get(_finding_file(f), 0),
-            f.get("pattern", ""),
-            _tmp_cfg,
-            fix_churn_6m=f.get("fix_churn_6m"),
-        )["roi_score"]
-        for f in findings
-        if f.get("status", "found") not in resolved_statuses
-    ), 1)
+    # 技術的負債合計（active findings のみ）— per-finding 計算後に集計するため後で算出
 
     # Scan depth
     scan_depth = compute_scan_depth(base_path)
 
-    # Attach debt_score to each finding for dashboard display
     scoring_cfg = load_scoring_config(base_path)
-    for f in findings:
-        f["debt_score"] = finding_debt_score(f, scoring_cfg)
 
     # --- ROI data: churn, fan_out, roi_score ---
     # Priority: JSONL stored values > live git > 0
     churn_map = _load_churn_map(base_path)
     fan_out_map = _load_fan_out_map(base_path)
+
+    # Count findings per file to distribute fan_out fairly
+    from collections import Counter as _Counter
+    _file_finding_count = _Counter(_finding_file(f) for f in findings)
+
     for f in findings:
         file_a = _finding_file(f)
-        # Use JSONL-stored values if available, otherwise fall back to live git
         churn_val = f.get("churn_6m") or churn_map.get(file_a, 0)
-        fan_val = f.get("fan_out") or fan_out_map.get(file_a, 0)
+        # Always use file-level fan_out from live map (JSONL stores pre-distributed values)
+        file_fan_out = fan_out_map.get(file_a, 0) or f.get("fan_out", 0)
+        # Distribute file-level fan_out across findings in the same file
+        n_in_file = _file_finding_count.get(file_a, 1)
+        effective_fan_out = max(round(file_fan_out / n_in_file), 1) if file_fan_out > 0 else 0
         roi = compute_roi(
             severity=f.get("severity", "low"),
             churn_6m=churn_val,
-            fan_out=fan_val,
+            fan_out=effective_fan_out,
             pattern=f.get("pattern", ""),
             cfg=scoring_cfg,
             fix_churn_6m=f.get("fix_churn_6m"),
+            user_facing=bool(f.get("user_facing")),
+            found_at=f.get("found_at", ""),
+            status=f.get("status", "found"),
         )
         f["churn"] = roi["churn_6m"]
         f["churn_6m"] = churn_val  # preserve for info_theory
         f["fan_out"] = roi["fan_out"]
+        f["fan_out_file"] = file_fan_out  # original file-level fan_out
         f["total_lines"] = f.get("total_lines", 0)
-        f["roi_score"] = roi["roi_score"]
+        f["user_facing_weight"] = roi["user_facing_weight"]
+        f["age_multiplier"] = roi["age_multiplier"]
+        f["debt_coefficient"] = roi["debt_coefficient"]
+        f["context_score"] = roi["context_score"]
+        # Discount scores for uncertain findings (e.g. structural fragility from stress-test)
+        certainty = (f.get("taxonomies") or {}).get("certainty", "")
+        is_uncertain = certainty == "uncertain" or "構造的脆弱性" in f.get("title", "")
+        discount = 0.3 if is_uncertain else 1.0
+        f["roi_score"] = round(roi["roi_score"] * discount, 1)
+        f["debt_score"] = f["roi_score"]  # 技術的負債 = debt_coefficient × context_score
 
     # Merge suppress data (approved_by) into findings
     suppress_lookup: dict[str, dict] = {}
@@ -1330,6 +1462,10 @@ def generate_dashboard(
         fid = f.get("id", "")
         if fid in suppress_lookup:
             f["approved_by"] = suppress_lookup[fid].get("approved_by", "")
+
+    # 技術的負債合計（per-finding 計算後）
+    active_findings = [f for f in findings if f.get("status", "found") not in resolved_statuses]
+    debt_total = round(sum(f.get("debt_score", 0) for f in active_findings), 1)
 
     # Count planned debt (suppress + wontfix) and unapproved
     planned_debt = 0
@@ -1356,7 +1492,10 @@ def generate_dashboard(
         # Attach info_score to each finding
         for f in findings:
             info = finding_information_score(f, scan_history)
-            f["info_score"] = info["info_score"]
+            certainty = (f.get("taxonomies") or {}).get("certainty", "")
+            is_uncertain = certainty == "uncertain" or "構造的脆弱性" in f.get("title", "")
+            discount = 0.3 if is_uncertain else 1.0
+            f["info_score"] = round(info["info_score"] * discount, 1)
             f["surprise"] = info["surprise"]
     except Exception:
         coverage = {
@@ -1436,7 +1575,7 @@ def generate_dashboard(
         repo_count=len(stats.get("by_repo", {})),
         confirmed_bugs=confirmed_bugs,
         investigating=investigating,
-        debt_count=debt_count,
+        debt_total=debt_total,
         merged_count=status_counts.get("merged", 0),
         scan_count=scan_depth["scan_count"],
         scan_grade=scan_depth["grade"],
@@ -1461,6 +1600,7 @@ def generate_dashboard(
         coverage_ci_lower=coverage.get("ci_lower", 0),
         coverage_ci_upper=coverage.get("ci_upper", 0),
         coverage_json=json.dumps(coverage, ensure_ascii=False),
+        coverage_matrix_json=json.dumps(compute_coverage_matrix(base_path), ensure_ascii=False),
     )
 
     out_path = _findings_dir(base_path) / "dashboard.html"

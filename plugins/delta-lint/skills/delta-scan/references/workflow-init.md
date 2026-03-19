@@ -1,0 +1,1 @@
+../../delta-lint/references/workflow-init.md

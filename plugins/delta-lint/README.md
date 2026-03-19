@@ -35,10 +35,13 @@ PyYAML がない → pip install pyyaml を試行
 ### Claude Code から（推奨）
 
 ```
-> delta scan          # 変更ファイルのスキャン
-> delta scan --deep   # 深層スキャン（regex + 契約グラフ + LLM検証）
-> delta view          # ダッシュボードをブラウザで表示
-> delta init          # リポジトリの初期化（構造分析）
+> delta scan                              # 変更ファイルのデグレチェック
+> delta scan --scope smart                # git 履歴ベースでファイル選択
+> delta scan --depth graph                # 契約グラフ解析（深層スキャン）
+> delta scan --lens security              # セキュリティ特化
+> delta scan --scope all --lens stress    # 全ファイル × ストレステスト
+> delta view                              # ダッシュボードをブラウザで表示
+> delta init                              # リポジトリの初期化（構造分析）
 ```
 
 ### CLI から直接
@@ -46,8 +49,11 @@ PyYAML がない → pip install pyyaml を試行
 ```bash
 cd plugins/delta-lint/scripts
 
-# 変更ファイルをスキャン
+# 変更ファイルをスキャン（デフォルト: diff × 1hop × 構造矛盾検査）
 python cli.py scan --repo /path/to/repo
+
+# 3軸モデルで細かく指定
+python cli.py scan --scope smart --depth graph --lens security
 
 # プロファイルを使う（プリセット設定を一括適用）
 python cli.py scan -p deep             # 徹底スキャン
@@ -63,8 +69,8 @@ python cli.py scan --severity low --lang ja
 # 意味検索を有効化（暗黙の仮定を抽出して関連ファイルを拡張）
 python cli.py scan --semantic
 
-# 深層スキャン（hook/定数/クラス継承の矛盾検出）
-python cli.py scan --deep
+# ドキュメントを仕様契約として検査（コード × ドキュメント矛盾検出）
+python cli.py scan --docs README.md ARCHITECTURE.md
 
 # ウォッチモード（ファイル変更を監視して自動再スキャン）
 python cli.py scan --watch
@@ -75,6 +81,23 @@ python cli.py scan --autofix
 # API バックエンドを使用
 python cli.py scan --backend api
 ```
+
+## 3軸スキャンモデル
+
+スキャンは **広さ（scope）× 深さ（depth）× 質（lens）** の3軸で制御します。
+
+| 軸 | 選択肢 | 説明 |
+|----|--------|------|
+| **scope**（広さ） | `diff`（デフォルト） | 変更ファイル + 1-hop 依存 |
+| | `smart` | git 履歴ベースのファイル選択（diff 不要） |
+| | `all` | 全ソースファイル |
+| **depth**（深さ） | `1hop`（デフォルト） | import ベースの 1-hop 依存 |
+| | `graph` | 契約グラフ解析（surface extraction → LLM 検証） |
+| **lens**（質） | `default`（デフォルト） | 構造矛盾検査（10パターン） |
+| | `stress` | 仮想改修ストレステスト（地雷マップ生成） |
+| | `security` | セキュリティ特化（認証・権限・入力検証） |
+
+全組み合わせ: 3 × 2 × 3 = **18通り**。ダッシュボードの「スキャン状況」パネルで実行済み/未実行が一覧できます。
 
 ## 検出パターン
 
@@ -147,12 +170,6 @@ roi_score = severity × churn_weight × fan_out_weight / fix_cost × 100
 - **churn_weight**: 0.5〜10.0（月3回以上変更で max。小規模リポでも差が出る）
 - **fan_out_weight**: 1.0〜10.0（5ファイル以上が参照で max）
 - **fix_cost**: パターン別の修正工数（④ガード追加=1.0, ⑩共通化=5.0 等）
-
-| 例 | severity | churn | fan_out | pattern | スコア |
-|---|----------|-------|---------|---------|-------|
-| high + hot + 5参照 + ④ | 1.0 | 10.0 | 10.0 | 1.0 | **10,000** |
-| medium + warm + 3参照 + ② | 0.6 | 5.0 | 6.4 | 2.0 | **960** |
-| low + cold + 1参照 + ⑩ | 0.3 | 0.5 | 1.0 | 5.0 | **3** |
 
 ### Chao1 カバレッジ推定
 
@@ -262,7 +279,7 @@ policy:
 | `model` | string | `"claude-sonnet-4-20250514"` | 検出に使用する Claude モデル |
 | `verbose` | boolean | `false` | 詳細ログを出力 |
 | `semantic` | boolean | `false` | 意味検索（暗黙の仮定抽出）を有効化。精度が上がるがスキャン時間が増加 |
-| `persona` | `"engineer"` \| `"pm"` \| `"qa"` | `"engineer"` | 出力ペルソナ。`pm` = ビジネス影響ベース、`qa` = テストシナリオベース |
+| `persona` | `"engineer"` \| `"pm"` \| `"qa"` | config.json 優先 | 出力ペルソナ。CLI 未指定時は config.json の値を使用 |
 | `autofix` | boolean | `false` | 検出した矛盾に対する自動修正コード生成を有効化 |
 
 ### スコアリング設定
@@ -283,8 +300,9 @@ policy:
 デフォルト値の確認・エクスポート：
 
 ```bash
-python cli.py config init   # config.json にデフォルト値を書き出し
-python cli.py config show   # 現在の設定（デフォルト + オーバーライド）を表示
+python cli.py config init                 # config.json にデフォルト値を書き出し
+python cli.py config init --no-interactive  # 対話なしでデフォルト書き出し
+python cli.py config show                 # 現在の設定（デフォルト + オーバーライド）を表示
 ```
 
 ## CLI コマンド一覧
@@ -298,23 +316,27 @@ python cli.py scan [OPTIONS]
 | フラグ | デフォルト | 説明 |
 |--------|-----------|------|
 | `--repo` | `.` | 対象リポジトリ |
+| `--scope` | `diff` | 広さ: `diff`（変更ファイル）/ `smart`（git履歴優先）/ `all`（全ファイル） |
+| `--depth` | `1hop` | 深さ: `1hop`（import依存）/ `graph`（契約グラフ解析） |
+| `--lens` | `default` | 質: `default`（構造矛盾検査）/ `stress`（ストレステスト）/ `security`（セキュリティ） |
 | `--profile` / `-p` | なし | スキャンプロファイル（`deep`, `light`, `security` 等） |
 | `--files` | (git diff) | スキャン対象ファイルを直接指定 |
+| `--docs` | なし | ドキュメントを仕様契約として含む（引数なしで自動発見） |
 | `--diff-target` | `HEAD` | 差分比較先の git ref |
 | `--severity` | `high` | 表示する最小重要度 |
 | `--format` | `markdown` | 出力形式（`markdown` / `json`） |
 | `--lang` | `en` | 出力言語（`en` / `ja`） |
-| `--for` | `engineer` | ペルソナ（`engineer` / `pm` / `qa`） |
+| `--for` | config.json 優先 | ペルソナ（`engineer` / `pm` / `qa`） |
 | `--backend` | `cli` | LLM バックエンド（`cli` / `api`） |
 | `--model` | `claude-sonnet-4-20250514` | LLM モデル |
 | `--semantic` | off | 意味検索を有効化 |
-| `--smart` | off | git 履歴ベースのファイル選択（diff 不要） |
-| `--deep` | off | 深層スキャン（regex + 契約グラフ + LLM検証） |
-| `--full` | off | ストレステスト（仮想改修 × N、地雷マップ生成） |
 | `--watch` | off | ファイル変更監視モード |
+| `--watch-interval` | `3.0` | ウォッチモードのポーリング間隔（秒） |
 | `--autofix` | off | 修正コード自動生成 |
 | `--no-verify` | off | Phase 2 検証をスキップ（高速化、FP率上昇） |
 | `--no-cache` | off | キャッシュを使わず常に LLM 呼び出し |
+| `--no-learn` | off | sibling_map 自動更新をスキップ |
+| `--deep-workers` | `4` | 深層スキャンの並列 LLM 検証ワーカー数 |
 | `--baseline` | なし | ベースラインとの差分のみ報告 |
 | `--baseline-save` | off | 現在の結果をベースラインとして保存 |
 | `--diff-only` | off | diff 内ファイルに関連する finding のみ表示 |
@@ -329,24 +351,38 @@ python cli.py findings <subcommand> [OPTIONS]
 | サブコマンド | 説明 |
 |-------------|------|
 | `add` | finding を手動記録 |
-| `list` | finding 一覧（`--status`, `--type`, `--format json` でフィルタ可） |
+| `list` | finding 一覧（`--status`, `--type`, `--repo-name`, `--format json` でフィルタ可） |
 | `update <id> <status>` | ステータス更新（例: `update abc123 merged`） |
 | `search <query>` | キーワード検索 |
 | `stats` | サマリー統計（件数、severity 別、debt_score 合計） |
+| `enrich` | git churn / fan-out データで findings をエンリッチ |
+| `verify-top` | 優先度上位 1/3 の findings を LLM で再検証 |
 | `index` | `_index.md` を再生成 |
 | `dashboard` | HTML ダッシュボードを生成してブラウザで表示 |
+
+### suppress
+
+```bash
+python cli.py suppress [OPTIONS]
+```
+
+| フラグ | 説明 |
+|--------|------|
+| `<N>` | 直近スキャンの N 番目の finding を抑制 |
+| `--list` | 抑制リスト表示 |
+| `--check` | 期限切れの抑制をチェック |
+| `--why` | 抑制理由（非対話モード用） |
+| `--why-type` | 理由タイプ: `domain`/`d`, `technical`/`t`, `preference`/`p` |
+| `--approved-by` | 承認者名（未指定 = 未承認 = 自己判断） |
 
 ### その他
 
 | コマンド | 説明 |
 |---------|------|
 | `init` | リポジトリの初期化（構造分析 + sibling_map 生成） |
-| `view` | ダッシュボード（地雷マップ / findings）をブラウザで表示 |
-| `config init` | デフォルトのスコアリング設定を `.delta-lint/config.json` に書き出し |
-| `config show` | 現在のスコアリング設定を表示 |
-| `suppress <N>` | 直近スキャンの N 番目の finding を抑制 |
-| `suppress --list` | 抑制リスト表示 |
-| `suppress --check` | 期限切れの抑制をチェック |
+| `view` | ダッシュボードをブラウザで表示（`--regenerate` で再生成） |
+| `config init` | デフォルト設定を `.delta-lint/config.json` に書き出し（`--no-interactive` 対応） |
+| `config show` | 現在の設定を表示 |
 | `debt-loop` | 優先度順に finding を修正（branch → fix → commit → PR） |
 
 ## Autofix / Debt Loop

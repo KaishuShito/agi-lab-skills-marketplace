@@ -1119,7 +1119,7 @@ def _call_claude(prompt: str) -> str:
     result = subprocess.run(
         ["claude", "-p"],
         input=prompt,
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=600,
     )
     if result.returncode != 0:
         raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
@@ -1368,10 +1368,13 @@ def run_stress_test(
         print(f"  Saved: {structure_path}", file=sys.stderr)
 
     # Step 0.5: Scan existing contradictions in hotspot clusters
-    existing_results = list(scan_existing(
-        structure, repo_path,
-        backend=backend, verbose=verbose, parallel=parallel, lang=lang,
-    ))
+    existing_results = [
+        result for result, _, _ in scan_existing(
+            structure, repo_path,
+            backend=backend, verbose=verbose, parallel=parallel, lang=lang,
+            stream=True,
+        )
+    ]
     existing_findings_path = out / "existing_findings.json"
     existing_data = {
         "metadata": {

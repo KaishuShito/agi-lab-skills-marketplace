@@ -47,16 +47,17 @@ LANG_INSTRUCTIONS = {
 
 
 def load_system_prompt(lang: str = "en", repo_path: str = "",
-                       prompt_append: str = "") -> str:
+                       prompt_append: str = "",
+                       lens: str = "default") -> str:
     """Load the detection system prompt.
 
     Resolution order:
     1. .delta-lint/detect.md (team override — full control, replaces core)
     2. Built-in prompts/detect.md (default)
 
+    If lens="security", appends security-focused instructions.
     If prompt_append is provided (from policy.prompt_append), it is appended
-    to whichever prompt is loaded. This allows teams to add instructions
-    without replacing the entire prompt.
+    to whichever prompt is loaded.
     """
     # Check for team override
     if repo_path:
@@ -65,6 +66,8 @@ def load_system_prompt(lang: str = "en", repo_path: str = "",
             prompt = override_path.read_text(encoding="utf-8")
             lang_instruction = LANG_INSTRUCTIONS.get(lang, "")
             prompt = prompt.replace("{lang_instruction}", lang_instruction)
+            if lens == "security":
+                prompt += "\n\n" + _SECURITY_LENS_APPEND
             if prompt_append:
                 prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
             return prompt
@@ -74,9 +77,42 @@ def load_system_prompt(lang: str = "en", repo_path: str = "",
     prompt = prompt_path.read_text(encoding="utf-8")
     lang_instruction = LANG_INSTRUCTIONS.get(lang, "")
     prompt = prompt.replace("{lang_instruction}", lang_instruction)
+    if lens == "security":
+        prompt += "\n\n" + _SECURITY_LENS_APPEND
     if prompt_append:
         prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
     return prompt
+
+
+_SECURITY_LENS_APPEND = """\
+## Security Lens (Active)
+
+You are now operating in **security-focused mode**. In addition to the standard
+contradiction and debt patterns, prioritize detection of security-relevant issues:
+
+### Security Patterns to Emphasize
+
+1. **Authentication/Authorization Asymmetry**: One endpoint checks permissions,
+   a sibling endpoint does not. Login path validates tokens differently than API path.
+2. **Input Validation Gap**: One code path sanitizes input, another path reaching
+   the same sink does not. SQL/command injection via unvalidated alternative route.
+3. **Secret/Credential Leakage**: Config paths, API keys, tokens exposed in error
+   messages, logs, or client-facing responses. Debug endpoints left enabled.
+4. **Cryptographic Inconsistency**: One module uses constant-time comparison,
+   another uses `==`. Hash algorithm mismatch between signing and verification.
+5. **Race Condition in Security Check**: TOCTOU between permission check and
+   privileged operation. Share counters without atomicity.
+
+### Severity Mapping for Security Findings
+
+- **high**: Exploitable without authentication, data leakage, privilege escalation
+- **medium**: Requires authenticated access, defense-in-depth gaps
+- **low**: Informational, hardening opportunities
+
+Report security findings with the same JSON format. Use the most relevant
+contradiction pattern (①-⑩) that matches, or describe the security-specific
+mechanism in the `contradiction` field.
+"""
 
 
 def build_user_prompt(context: ModuleContext, repo_name: str = "",
@@ -297,7 +333,8 @@ def detect(context: ModuleContext, repo_name: str = "",
            repo_path: str = "",
            prompt_append: str = "",
            disabled_patterns: list[str] | None = None,
-           detect_prompt: str = "") -> list[dict]:
+           detect_prompt: str = "",
+           lens: str = "default") -> list[dict]:
     """Run contradiction detection on a module context.
 
     Args:
@@ -314,6 +351,7 @@ def detect(context: ModuleContext, repo_name: str = "",
         prompt_append: Optional text appended to system prompt (from policy)
         disabled_patterns: Optional list of pattern IDs to skip (e.g. ["⑦", "⑩"])
         detect_prompt: Optional custom system prompt (overrides detect.md entirely)
+        lens: Detection lens — "default", "security", or "stress"
 
     Returns:
         List of contradiction dicts (raw from LLM, unfiltered)
@@ -325,7 +363,8 @@ def detect(context: ModuleContext, repo_name: str = "",
             system_prompt += f"\n\n## Team-Specific Instructions\n\n{prompt_append}"
     else:
         system_prompt = load_system_prompt(lang=lang, repo_path=repo_path,
-                                           prompt_append=prompt_append)
+                                           prompt_append=prompt_append,
+                                           lens=lens)
     user_prompt = build_user_prompt(context, repo_name, constraints=constraints,
                                     architecture=architecture,
                                     diff_text=diff_text,

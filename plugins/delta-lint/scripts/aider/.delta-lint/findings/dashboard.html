@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-$progress_meta
+
 <title>&delta;-lint ダッシュボード</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -61,69 +61,61 @@ tailwind.config = {
   <nav class="flex-1 py-2">
     <div class="nav-item active flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium" data-nav="findings">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-      検出結果 <span class="ml-auto text-[11px] bg-accent/15 text-accent rounded-full px-2 py-px font-medium" id="findings-nav-count">$total_count</span>
+      検出結果 <span class="ml-auto text-[11px] bg-accent/15 text-accent rounded-full px-2 py-px font-medium" id="findings-nav-count">0</span>
     </div>
     <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="landmine" id="nav-landmine">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
       地雷マップ
     </div>
-    <div class="nav-item hidden items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="tradeoffs">
+    <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="tradeoffs">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
       トレードオフ <span class="ml-auto text-[11px] bg-surface-4 rounded-full px-2 py-px text-txt-muted" id="tradeoffs-nav-count">0</span>
-    </div>
-    <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="coverage">
-      <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2z"/></svg>
-      スキャン状況
-    </div>
-    <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="scoring">
-      <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3v-6m-3 6v-1m6-9a2 2 0 012 2v10a2 2 0 01-2 2H8a2 2 0 01-2-2V9a2 2 0 012-2h0"/></svg>
-      計算ロジック
     </div>
   </nav>
   <!-- Footer info -->
   <div class="px-4 py-3 border-t border-surface-3 text-[10px] text-txt-dim leading-relaxed">
-    <div>$repo_count リポジトリ</div>
-    <div class="mt-0.5">$generated_at</div>
-    $custom_scoring_badge
+    <div>0 リポジトリ</div>
+    <div class="mt-0.5">2026-03-19 17:19</div>
+    
   </div>
 </aside>
 
 <!-- ══ Main Content ══ -->
 <main class="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
 
-  $progress_html
+  
 
   <!-- ── KPI Row ── -->
   <div class="flex gap-2.5 px-6 py-3 flex-wrap shrink-0 border-b border-surface-3 bg-surface-1/50">
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-link">$total_count</div>
+      <div class="text-2xl font-bold text-link">0</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">シグナル総数</div>
       <div class="text-[10px] text-txt-dim mt-0.5">LLM が検出した矛盾候補</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-sev-high">$confirmed_bugs</div>
+      <div class="text-2xl font-bold text-sev-high">0</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">検証済み</div>
       <div class="text-[10px] text-txt-dim mt-0.5">人間が確認したバグ</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-[#ffa502]">$investigating</div>
+      <div class="text-2xl font-bold text-[#ffa502]">0</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">未検証</div>
       <div class="text-[10px] text-txt-dim mt-0.5">LLM検出・人間未確認</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-debt">$debt_total</div>
+      <div class="text-2xl font-bold text-pat">0</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">技術的負債</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">係数 × 文脈</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">構造的に改善すべき</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-accent">$scan_grade</div>
+      <div class="text-2xl font-bold text-accent">-</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">スキャン深度</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">$scan_count回 / $scan_total_clustersクラスタ</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">0回 / 0クラスタ</div>
     </div>
-    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center" title="Chao1推定: 発見済み$total_count / 推定$coverage_estimated件 (CI: $coverage_ci_lower-$coverage_ci_upper)">
-      <div class="text-2xl font-bold" style="color:#e879f9">$coverage_pct%</div>
+    <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center" title="Chao1推定: 発見済み0 / 推定0件 (CI: 0-0)">
+      <div class="text-2xl font-bold" style="color:#e879f9">0%</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">推定カバレッジ</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">残 ~$coverage_unseen件の未発見</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">残 ~0件の未発見</div>
     </div>
   </div>
 
@@ -146,7 +138,7 @@ tailwind.config = {
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="title">内容 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="file">ファイル <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="status">ステータス <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
-                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="roi_score">技術的負債 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="roi_score">解消価値 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
               </tr>
             </thead>
             <tbody id="tbody"></tbody>
@@ -232,140 +224,15 @@ tailwind.config = {
     </div>
   </div>
 
-  <!-- ══ Coverage Matrix Panel ══ -->
-  <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-coverage">
-    <div class="px-6 py-6 overflow-y-auto flex-1 text-[13px] leading-relaxed text-txt">
-      <h2 class="text-lg font-bold mb-4">スキャン状況</h2>
-
-      <p class="text-txt-muted text-xs mb-6">
-        delta scan は <strong>広さ</strong>（対象ファイル）× <strong>深さ</strong>（依存の辿り方）× <strong>質</strong>（検出手法）の3軸で構成されます。<br>
-        各軸を独立に指定できます: <code class="bg-surface-2 px-1.5 py-0.5 rounded">delta scan --scope all --depth graph --lens security</code>
-      </p>
-
-      <!-- 軸の説明 -->
-      <div class="grid grid-cols-3 gap-3 mb-6">
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-accent text-xs mb-2">広さ (--scope)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">diff</code> <span class="text-txt-muted">git差分のみ（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">smart</code> <span class="text-txt-muted">git履歴で高リスク優先</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">all</code> <span class="text-txt-muted">全ファイル</span></div>
-          </div>
-        </div>
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-xs mb-2" style="color:#60a5fa">深さ (--depth)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">1hop</code> <span class="text-txt-muted">直接の依存のみ（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">graph</code> <span class="text-txt-muted">構造グラフで全体解析</span></div>
-          </div>
-        </div>
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-xs mb-2" style="color:#e879f9">質 (--lens)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">default</code> <span class="text-txt-muted">構造矛盾検査（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">stress</code> <span class="text-txt-muted">仮想改修で壊れ方を実験</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">security</code> <span class="text-txt-muted">認証・権限・入力検証に特化</span></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 統合カバレッジマトリクス: 行=広さ×深さ, 列=質 -->
-      <div>
-        <div class="overflow-x-auto">
-          <table class="w-full border-collapse text-[12px]" id="coverage-matrix">
-            <thead>
-              <tr>
-                <th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-left border border-surface-3">広さ × 深さ</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p class="text-[10px] text-txt-dim mt-3">
-          <span class="inline-block w-2 h-2 rounded-sm bg-accent mr-1 align-middle"></span>実行済み
-          <span class="inline-block w-2 h-2 rounded-sm bg-surface-4 mr-1 ml-3 align-middle"></span>未実行 — コマンドをコピーして実行
-        </p>
-      </div>
-    </div>
-  </div>
-
-  <!-- ══ Scoring Logic Panel ══ -->
-  <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-scoring">
-    <div class="px-6 py-6 overflow-y-auto flex-1 text-[13px] leading-relaxed text-txt">
-      <h2 class="text-lg font-bold mb-4">計算ロジック</h2>
-
-      <div class="space-y-6">
-        <!-- 技術的負債 -->
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold text-accent mb-2">技術的負債 (Technical Debt)</h3>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">technical_debt = debt_coefficient × context_score</code>
-          <p class="text-txt-muted text-xs">静的な重さ（負債係数）と文脈（修正の緊急度）を掛け合わせた統合指標。大きいほど優先的に対処すべき。</p>
-        </div>
-
-        <!-- 負債係数 -->
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold text-debt mb-2">負債係数 (Debt Coefficient) — 0〜1.0</h3>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">debt_coefficient = severity × pattern_weight × status</code>
-          <table class="w-full text-xs mt-2">
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28">severity</td><td>high=1.0 / medium=0.6 / low=0.3</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">pattern_weight</td><td>①=1.0 ②=1.0 ③=0.9 ④=1.0 ⑤=0.8 ⑥=0.9 ⑦=0.3 ⑧=0.6 ⑨=0.5 ⑩=0.4</td></tr>
-            <tr><td class="py-1.5 font-semibold">status</td><td>found/verified=1.0 / submitted=0.8 / rejected=0.5 / merged/wontfix/duplicate=0.0</td></tr>
-          </table>
-        </div>
-
-        <!-- 文脈スコア -->
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold mb-2" style="color:#60a5fa">文脈スコア (Context Score)</h3>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">context_score = churn_weight × fan_out_weight × user_facing × age_multiplier / fix_cost × 100</code>
-          <table class="w-full text-xs mt-2">
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28">churn_weight</td><td>6ヶ月の変更回数 → 0.5〜10.0（hot=月3回で最大）</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">fan_out_weight</td><td>参照ファイル数 → 1.0〜10.0（5参照で最大）</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">user_facing</td><td>UI/API影響=1.5× / 内部=1.0×</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">age_multiplier</td><td>1 + log₂(1 + days/30) × churn_ratio（放置×活発=加速、churn=0なら1.0）</td></tr>
-            <tr><td class="py-1.5 font-semibold">fix_cost</td><td>パターン別修正工数: ④=1.0 ⑦=0.5 ⑩=5.0 等</td></tr>
-          </table>
-        </div>
-
-        <!-- 情報量 -->
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold mb-2" style="color:#e879f9">情報量 (Information Score)</h3>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">info_score = surprise × (1 + entropy) × log₂(1 + fan_out) / fix_cost × 100</code>
-          <table class="w-full text-xs mt-2">
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28">surprise</td><td>-log₂ P(violation) — 稀なパターンほど高い（0〜1.0）</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">entropy</td><td>ファイルの変異率からバイナリエントロピー（0〜1.0）</td></tr>
-            <tr><td class="py-1.5 font-semibold">fan_out</td><td>対数スケール: log₂(1 + fan_out)</td></tr>
-          </table>
-          <p class="text-txt-muted text-xs mt-2">情報理論ベースの客観的指標。チーム設定に影響されない。</p>
-        </div>
-
-        <!-- カスタマイズ -->
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold text-txt-muted mb-2">カスタマイズ</h3>
-          <p class="text-xs text-txt-muted">全ての重みは <code class="bg-surface-1 px-1.5 py-0.5 rounded">.delta-lint/config.json</code> の <code class="bg-surface-1 px-1.5 py-0.5 rounded">scoring</code> セクションで上書きできます。</p>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mt-2 whitespace-pre">{
-  "scoring": {
-    "severity_weight": { "high": 1.0, "medium": 0.6, "low": 0.3 },
-    "pattern_weight": { "①": 1.0, ... },
-    "churn_thresholds": { "hot": 3.0, "max_weight": 10.0 },
-    "fan_out_thresholds": { "high": 5.0, "max_weight": 10.0 },
-    "fix_cost": { "④": 1.0, "⑩": 5.0, ... }
-  }
-}</code>
-        </div>
-      </div>
-    </div>
-  </div>
-
 </main>
 
 <!-- Tooltip -->
 <div class="fixed hidden px-3 py-2 bg-white border border-surface-3 rounded-lg text-[11px] pointer-events-none z-[1000] max-w-[340px] shadow-lg" id="tooltip"></div>
 
 <script>
-const FINDINGS = $findings_json;
-const SUPPRESSIONS = $suppressions_json;
-const TREEMAP_DATA = $treemap_json;
-const COVERAGE_MATRIX = $coverage_matrix_json;
+const FINDINGS = [];
+const SUPPRESSIONS = [];
+const TREEMAP_DATA = null;
 
 // ── Utility ──
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
@@ -984,10 +851,9 @@ function showDetail(idx) {
     +(locB?'\n'+esc(locB):'')
     +'</div>'
 
-    +'<div class="grid grid-cols-4 gap-1.5 mt-3">'
-    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(0):'-')+'</div><div class="text-[9px] text-txt-muted">技術的負債</div></div>'
-    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono text-txt-muted">'+(f.debt_coefficient!=null?f.debt_coefficient.toFixed(2):'-')+'</div><div class="text-[9px] text-txt-muted">負債係数</div></div>'
-    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono text-txt-muted">'+(f.context_score!=null?f.context_score.toFixed(0):'-')+'</div><div class="text-[9px] text-txt-muted">文脈スコア</div></div>'
+    +'<div class="grid grid-cols-3 gap-1.5 mt-3">'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono '+roiColor+'">'+(f.roi_score!=null?f.roi_score.toFixed(0):'-')+'</div><div class="text-[9px] text-txt-muted">解消価値</div></div>'
+    +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono text-debt">'+(f.debt_score!=null?f.debt_score.toFixed(1):'-')+'</div><div class="text-[9px] text-txt-muted">負債</div></div>'
     +'<div class="bg-surface-2 border border-surface-3 rounded-md p-2 text-center"><div class="text-lg font-bold font-mono" style="color:#e879f9">'+(f.info_score!=null?f.info_score.toFixed(0):'-')+'</div><div class="text-[9px] text-txt-muted">情報量</div></div>'
     +'</div>'
     +'<div class="grid grid-cols-5 gap-1 mt-1">'
@@ -1103,101 +969,6 @@ function renderTradeoffs() {
       +'</tr>';
   }).join("");
 }
-
-// ══════════════════════════════════════
-// Coverage Matrix
-// ══════════════════════════════════════
-(function renderCoverageMatrix() {
-  if (!COVERAGE_MATRIX) return;
-  const cells = COVERAGE_MATRIX.cells || [];
-
-  // --- Flow section ---
-  // --- Unified matrix: rows = scope × depth, cols = lens ---
-  const lenses = ["default", "stress", "security"];
-  const scopes = ["diff", "smart", "all"];
-  const depths = ["1hop", "graph"];
-
-  // Build row keys: scope × depth
-  const rowKeys = [];
-  scopes.forEach(s => {
-    depths.forEach(d => {
-      rowKeys.push({scope: s, depth: d});
-    });
-  });
-
-  const table = document.getElementById("coverage-matrix");
-  if (!table) return;
-  const thead = table.querySelector("thead tr");
-  const tbody = table.querySelector("tbody");
-
-  // Header: [広さ × 深さ] + 3 lens columns
-  thead.innerHTML = '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-left border border-surface-3">広さ × 深さ</th>';
-  lenses.forEach(l => {
-    const lensLabel = cells.find(c => c.lens === l)?.lens_label || l;
-    thead.innerHTML += '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-center border border-surface-3">' + esc(lensLabel) + '</th>';
-  });
-
-  // Scope group labels for separator rows
-  const scopeGroupLabels = {
-    "diff": "デグレ検知（フロー型）",
-    "smart": "コードベース診断（ストック型）",
-  };
-
-  tbody.innerHTML = "";
-  let doneCount = 0;
-  const totalCount = rowKeys.length * lenses.length; // 18
-
-  let prevScope = null;
-  rowKeys.forEach(rk => {
-    // Insert scope group separator
-    if (rk.scope !== prevScope) {
-      if (scopeGroupLabels[rk.scope]) {
-        const isFlow = rk.scope === "diff";
-        const dotColor = isFlow ? "bg-link" : "bg-accent";
-        tbody.innerHTML += '<tr><td colspan="4" class="px-3 py-2 border border-surface-3 bg-surface-1 text-[11px] font-semibold">'
-          + '<span class="w-2 h-2 rounded-full ' + dotColor + ' inline-block mr-1.5 align-middle"></span>'
-          + scopeGroupLabels[rk.scope]
-          + '</td></tr>';
-      }
-      prevScope = rk.scope;
-    }
-
-    const scopeLabel = cells.find(c => c.scope === rk.scope)?.scope_label || rk.scope;
-    const depthLabel = cells.find(c => c.depth === rk.depth)?.depth_label || rk.depth;
-    let row = '<tr><td class="px-3 py-2.5 text-[11px] border border-surface-3 bg-surface-1">'
-      + '<span class="font-semibold">' + esc(scopeLabel) + '</span>'
-      + '<span class="text-txt-dim mx-1">×</span>'
-      + '<span class="text-txt-muted">' + esc(depthLabel) + '</span></td>';
-
-    lenses.forEach(l => {
-      const cell = cells.find(c => c.scope === rk.scope && c.depth === rk.depth && c.lens === l);
-      if (!cell) {
-        row += '<td class="px-3 py-2.5 text-center border border-surface-3 bg-surface-1 text-txt-dim text-[10px]">—</td>';
-        return;
-      }
-      if (cell.count > 0) {
-        doneCount++;
-        row += '<td class="px-3 py-2.5 text-center border border-surface-3 bg-accent/5 cursor-pointer hover:bg-accent/10 transition-colors" '
-          + 'onclick="navigator.clipboard.writeText(\'' + cell.command.replace(/'/g, "\\'") + '\');this.querySelector(\'.copy-msg\').classList.remove(\'hidden\');setTimeout(()=>this.querySelector(\'.copy-msg\').classList.add(\'hidden\'),1500)">'
-          + '<div class="flex items-center justify-center gap-1">'
-          + '<span class="w-2 h-2 rounded-full bg-accent inline-block"></span>'
-          + '<span class="font-bold text-accent">' + cell.count + '回</span></div>'
-          + '<div class="text-[10px] text-txt-dim mt-0.5">' + esc(cell.last_run) + '</div>'
-          + '<code class="bg-surface-1 px-1 py-0.5 rounded text-[9px] text-txt-dim mt-0.5 inline-block">' + esc(cell.command) + '</code>'
-          + '<div class="copy-msg hidden text-[9px] text-accent mt-0.5 font-semibold">Copied!</div></td>';
-      } else {
-        row += '<td class="px-3 py-2.5 text-center border border-surface-3 bg-surface-2 cursor-pointer hover:bg-surface-3 transition-colors" '
-          + 'onclick="navigator.clipboard.writeText(\'' + cell.command.replace(/'/g, "\\'") + '\');this.querySelector(\'.copy-msg\').classList.remove(\'hidden\');setTimeout(()=>this.querySelector(\'.copy-msg\').classList.add(\'hidden\'),1500)">'
-          + '<div class="text-txt-dim text-[10px] mb-1">未実行</div>'
-          + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] text-txt-muted">' + esc(cell.command) + '</code>'
-          + '<div class="copy-msg hidden text-[9px] text-accent mt-0.5 font-semibold">Copied!</div></td>';
-      }
-    });
-    row += '</tr>';
-    tbody.innerHTML += row;
-  });
-
-})();
 </script>
 </body>
 </html>
