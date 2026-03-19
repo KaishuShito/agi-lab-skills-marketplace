@@ -84,7 +84,8 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
 
     Never exits — always finds a way to continue with degraded functionality.
     Returns a dict with resolved settings:
-      {"backend": "cli"|"api", "warnings": [...], "degraded": bool}
+      {"backend": "cli"|"api", "warnings": [...], "degraded": bool,
+       "gh_available": bool}
     """
     import shutil
     import subprocess as _sp
@@ -172,6 +173,68 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
         except (_sp.TimeoutExpired, OSError):
             pass  # JSON fallback is fine
 
+    # --- gh CLI (optional — needed for Issue/PR creation in autonomous mode) ---
+    gh_available = bool(shutil.which("gh"))
+    if not gh_available:
+        # Attempt auto-install
+        if shutil.which("brew"):
+            print("gh CLI not found. Attempting install via brew...", file=sys.stderr)
+            try:
+                r = _sp.run(
+                    ["brew", "install", "gh"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode == 0 and shutil.which("gh"):
+                    gh_available = True
+                    print("  ✓ gh CLI installed.", file=sys.stderr)
+            except (_sp.TimeoutExpired, OSError):
+                pass
+        if not gh_available and shutil.which("conda"):
+            print("gh CLI not found. Attempting install via conda...", file=sys.stderr)
+            try:
+                r = _sp.run(
+                    ["conda", "install", "-y", "-c", "conda-forge", "gh"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if r.returncode == 0 and shutil.which("gh"):
+                    gh_available = True
+                    print("  ✓ gh CLI installed.", file=sys.stderr)
+            except (_sp.TimeoutExpired, OSError):
+                pass
+        if not gh_available:
+            warnings.append(
+                "gh CLI not available. Issue/PR creation disabled. "
+                "Install: brew install gh (macOS) / "
+                "sudo apt install gh (Ubuntu) / "
+                "conda install -c conda-forge gh"
+            )
+
+    # --- gh auth (check authentication, attempt login if needed) ---
+    if gh_available:
+        try:
+            r = _sp.run(
+                ["gh", "auth", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                print("gh CLI not authenticated. Attempting browser-based login...",
+                      file=sys.stderr)
+                # --web opens browser for OAuth; needs interactive I/O
+                r = _sp.run(
+                    ["gh", "auth", "login", "--web", "--git-protocol", "https"],
+                    timeout=120,
+                )
+                if r.returncode == 0:
+                    print("  ✓ gh CLI authenticated.", file=sys.stderr)
+                else:
+                    warnings.append(
+                        "gh CLI installed but authentication failed. "
+                        "Run 'gh auth login' manually. "
+                        "Issue/PR creation will be skipped."
+                    )
+        except (_sp.TimeoutExpired, OSError):
+            pass
+
     # --- Default branch detection ---
     try:
         r = _sp.run(
@@ -204,7 +267,8 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
     for w in warnings:
         print(f"  ⚠ {w}", file=sys.stderr)
 
-    return {"backend": resolved_backend, "warnings": warnings, "degraded": degraded}
+    return {"backend": resolved_backend, "warnings": warnings, "degraded": degraded,
+            "gh_available": gh_available}
 
 
 # ---------------------------------------------------------------------------

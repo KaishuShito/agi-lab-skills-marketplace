@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-$progress_meta
+
 <title>DeltaLint ダッシュボード</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -61,7 +61,7 @@ tailwind.config = {
   <nav class="flex-1 py-2">
     <div class="nav-item active flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium" data-nav="findings">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-      検出結果 <span class="ml-auto text-[11px] bg-accent/15 text-accent rounded-full px-2 py-px font-medium" id="findings-nav-count">$total_count</span>
+      検出結果 <span class="ml-auto text-[11px] bg-accent/15 text-accent rounded-full px-2 py-px font-medium" id="findings-nav-count">2</span>
     </div>
     <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="coverage">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2z"/></svg>
@@ -82,8 +82,8 @@ tailwind.config = {
   </nav>
   <!-- Footer info -->
   <div class="px-4 py-3 border-t border-surface-3 text-[10px] text-txt-dim leading-relaxed">
-    <div>$generated_at</div>
-    $custom_scoring_badge
+    <div>2026-03-20 04:12</div>
+    
   </div>
 </aside>
 
@@ -93,39 +93,39 @@ tailwind.config = {
   <!-- ── Header Bar ── -->
   <div class="flex items-center justify-between px-6 py-3 border-b border-surface-3 bg-surface-1/30 shrink-0">
     <div class="flex items-baseline gap-2.5">
-      <span class="text-[17px] font-bold text-txt-bright tracking-tight font-mono">$primary_repo</span>
+      <span class="text-[17px] font-bold text-txt-bright tracking-tight font-mono">test/repo</span>
     </div>
-    <div class="text-[11px] text-txt-dim">$generated_at</div>
+    <div class="text-[11px] text-txt-dim">2026-03-20 04:12</div>
   </div>
 
-  $progress_html
+  
 
   <!-- ── KPI Row ── -->
   <div class="flex gap-2.5 px-6 py-3 flex-wrap shrink-0 border-b border-surface-3 bg-surface-1/50">
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-link">$total_count</div>
+      <div class="text-2xl font-bold text-link">2</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">シグナル総数</div>
       <div class="text-[10px] text-txt-dim mt-0.5">LLM が検出した矛盾候補</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-sev-high">$confirmed_bugs</div>
+      <div class="text-2xl font-bold text-sev-high">0</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">検証済み</div>
       <div class="text-[10px] text-txt-dim mt-0.5">人間が確認したバグ</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-[#ffa502]">$investigating</div>
+      <div class="text-2xl font-bold text-[#ffa502]">2</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">未検証</div>
       <div class="text-[10px] text-txt-dim mt-0.5">LLM検出・人間未確認</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-debt">$debt_total</div>
+      <div class="text-2xl font-bold text-debt">33.2</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">技術的負債</div>
       <div class="text-[10px] text-txt-dim mt-0.5">係数 × 文脈</div>
     </div>
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
-      <div class="text-2xl font-bold text-accent">$scan_grade</div>
+      <div class="text-2xl font-bold text-accent">-</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">スキャン深度</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">$scan_count回 / $scan_total_clustersクラスタ</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">0回 / 0クラスタ</div>
     </div>
   </div>
 
@@ -364,10 +364,10 @@ tailwind.config = {
 <div class="fixed hidden px-3 py-2 bg-white border border-surface-3 rounded-lg text-[11px] pointer-events-none z-[1000] max-w-[340px] shadow-lg" id="tooltip"></div>
 
 <script>
-const FINDINGS = $findings_json;
-const SUPPRESSIONS = $suppressions_json;
-const TREEMAP_DATA = $treemap_json;
-const COVERAGE_MATRIX = $coverage_matrix_json;
+const FINDINGS = [{"id": "repo-3ddaf73e", "repo": "test/repo", "file": "src/main.ts", "line": 42, "type": "bug", "severity": "high", "pattern": "④ Guard Non-Propagation", "title": "Test finding", "description": "Test description", "status": "found", "github_url": "", "found_by": "claude-opus", "found_at": "2026-03-16", "verified": false, "tags": null, "_updated_at": "2026-03-16T22:47:41.796573", "taxonomies": {}, "churn": 0, "churn_6m": 0, "fan_out": 0, "fan_out_file": 0, "total_lines": 0, "user_facing_weight": 1.0, "age_multiplier": 1.0, "debt_coefficient": 0.5, "context_score": 33.3, "roi_score": 16.6, "debt_score": 16.6, "info_score": 41.2, "surprise": 0.412}, {"id": "repo-abb8b425", "repo": "test/repo", "file": "src/main.ts", "line": 42, "type": "bug", "severity": "high", "pattern": "", "title": "CLI test", "description": "", "status": "found", "github_url": "", "found_by": "test", "found_at": "2026-03-16", "verified": false, "tags": null, "_updated_at": "2026-03-16T22:48:46.484142", "taxonomies": {}, "churn": 0, "churn_6m": 0, "fan_out": 0, "fan_out_file": 0, "total_lines": 0, "user_facing_weight": 1.0, "age_multiplier": 1.0, "debt_coefficient": 0.5, "context_score": 33.3, "roi_score": 16.6, "debt_score": 16.6, "info_score": 41.2, "surprise": 0.412}];
+const SUPPRESSIONS = [];
+const TREEMAP_DATA = null;
+const COVERAGE_MATRIX = {"cells": [{"scope": "diff", "depth": "1hop", "lens": "default", "scope_label": "変更差分", "depth_label": "1-hop依存", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan", "is_flow": true}, {"scope": "diff", "depth": "1hop", "lens": "stress", "scope_label": "変更差分", "depth_label": "1-hop依存", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --lens stress", "is_flow": true}, {"scope": "diff", "depth": "1hop", "lens": "security", "scope_label": "変更差分", "depth_label": "1-hop依存", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --lens security", "is_flow": true}, {"scope": "diff", "depth": "graph", "lens": "default", "scope_label": "変更差分", "depth_label": "構造グラフ", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan --depth graph", "is_flow": true}, {"scope": "diff", "depth": "graph", "lens": "stress", "scope_label": "変更差分", "depth_label": "構造グラフ", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --depth graph --lens stress", "is_flow": true}, {"scope": "diff", "depth": "graph", "lens": "security", "scope_label": "変更差分", "depth_label": "構造グラフ", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --depth graph --lens security", "is_flow": true}, {"scope": "smart", "depth": "1hop", "lens": "default", "scope_label": "履歴優先", "depth_label": "1-hop依存", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan --scope smart", "is_flow": false}, {"scope": "smart", "depth": "1hop", "lens": "stress", "scope_label": "履歴優先", "depth_label": "1-hop依存", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --scope smart --lens stress", "is_flow": false}, {"scope": "smart", "depth": "1hop", "lens": "security", "scope_label": "履歴優先", "depth_label": "1-hop依存", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --scope smart --lens security", "is_flow": false}, {"scope": "smart", "depth": "graph", "lens": "default", "scope_label": "履歴優先", "depth_label": "構造グラフ", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan --scope smart --depth graph", "is_flow": false}, {"scope": "smart", "depth": "graph", "lens": "stress", "scope_label": "履歴優先", "depth_label": "構造グラフ", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --scope smart --depth graph --lens stress", "is_flow": false}, {"scope": "smart", "depth": "graph", "lens": "security", "scope_label": "履歴優先", "depth_label": "構造グラフ", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --scope smart --depth graph --lens security", "is_flow": false}, {"scope": "all", "depth": "1hop", "lens": "default", "scope_label": "全ファイル", "depth_label": "1-hop依存", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan --scope all", "is_flow": false}, {"scope": "all", "depth": "1hop", "lens": "stress", "scope_label": "全ファイル", "depth_label": "1-hop依存", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --scope all --lens stress", "is_flow": false}, {"scope": "all", "depth": "1hop", "lens": "security", "scope_label": "全ファイル", "depth_label": "1-hop依存", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --scope all --lens security", "is_flow": false}, {"scope": "all", "depth": "graph", "lens": "default", "scope_label": "全ファイル", "depth_label": "構造グラフ", "lens_label": "構造矛盾検査", "count": 0, "last_run": "", "command": "delta scan --scope all --depth graph", "is_flow": false}, {"scope": "all", "depth": "graph", "lens": "stress", "scope_label": "全ファイル", "depth_label": "構造グラフ", "lens_label": "ストレステスト", "count": 0, "last_run": "", "command": "delta scan --scope all --depth graph --lens stress", "is_flow": false}, {"scope": "all", "depth": "graph", "lens": "security", "scope_label": "全ファイル", "depth_label": "構造グラフ", "lens_label": "セキュリティ", "count": 0, "last_run": "", "command": "delta scan --scope all --depth graph --lens security", "is_flow": false}], "cells_done": 0, "cells_total": 18};
 
 // ── Utility ──
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }

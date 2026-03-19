@@ -11,24 +11,25 @@
 - **Python 3.11+**
 - **git** — diff ベースのスキャンに使用
 
-### LLM バックエンド（いずれか1つ）
+### 自動セットアップ（手動インストール不要）
 
-| 方法 | コスト | セットアップ |
-|------|--------|------------|
-| **claude CLI**（推奨） | $0（サブスクリプション内） | `npm install -g @anthropic-ai/claude-code` |
-| **Anthropic API** | 従量課金 | `export ANTHROPIC_API_KEY='sk-ant-...'` |
+DeltaLint は初回スキャン時に不足している依存を**自動で検出・インストール**します。
+手動でのセットアップは不要です。何もインストールされていない状態からでも、DeltaLint が自分で環境を整えます。
 
-### 自動インストール
+| 依存 | 自動解決方法 | 用途 |
+|------|-------------|------|
+| **claude CLI** | `npm install -g @anthropic-ai/claude-code` | LLM バックエンド（$0） |
+| **gh CLI** | `brew install gh` / `conda install gh` → 自動で `gh auth login --web` | Issue/PR 自動作成 |
+| **anthropic SDK** | `pip install anthropic` | API バックエンド（フォールバック） |
+| **PyYAML** | `pip install pyyaml` | 設定ファイル読み込み |
 
-DeltaLint は初回スキャン時に不足している依存を自動でインストールします：
+いずれかのインストールが失敗しても、代替手段に自動フォールバックして動作を継続します：
 
 ```
-claude CLI がない → npm install -g @anthropic-ai/claude-code を試行
-anthropic SDK がない → pip install anthropic を試行
-PyYAML がない → pip install pyyaml を試行
+claude CLI がない → Anthropic API にフォールバック
+gh CLI がない    → Issue/PR 作成をスキップ（スキャン結果は正常に返す）
+API キーもない   → dry-run モードで動作
 ```
-
-インストールが拒否された場合やエラーの場合も、利用可能な代替手段に自動フォールバックして動作を継続します。手動介入は不要です。
 
 ## 使い方
 

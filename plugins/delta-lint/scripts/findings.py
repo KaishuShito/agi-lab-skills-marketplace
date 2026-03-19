@@ -1570,9 +1570,13 @@ def generate_dashboard(
         progress_meta = ""
         progress_html = ""
 
+    repos = list(stats.get("by_repo", {}).keys())
+    primary_repo = repos[0] if len(repos) == 1 else base_path.resolve().name
+
     html = template.safe_substitute(
         total_count=stats["total"],
         repo_count=len(stats.get("by_repo", {})),
+        primary_repo=primary_repo,
         confirmed_bugs=confirmed_bugs,
         investigating=investigating,
         debt_total=debt_total,
