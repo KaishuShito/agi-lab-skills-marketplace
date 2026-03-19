@@ -65,7 +65,7 @@ tailwind.config = {
     </div>
     <div class="nav-item flex items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="coverage">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2zm0 8a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1v-2z"/></svg>
-      スキャン状況
+      コマンド一覧
     </div>
     <div class="nav-item hidden items-center gap-2.5 px-4 py-2.5 cursor-pointer text-[13px] font-medium text-txt-muted" data-nav="tradeoffs">
       <svg class="w-4 h-4 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
@@ -125,7 +125,7 @@ tailwind.config = {
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
       <div class="text-2xl font-bold text-accent">$scan_grade</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">スキャン深度</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">$scan_count回 / $scan_total_clustersクラスタ</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">$scan_cells_done/$scan_cells_totalセル · $scan_count回</div>
     </div>
   </div>
 
@@ -133,9 +133,7 @@ tailwind.config = {
   <div class="nav-panel flex flex-col flex-1 min-h-0" id="panel-findings">
     <div class="flex items-center gap-3 px-6 pt-2 pb-1 shrink-0">
       <div class="flex rounded-lg border border-surface-3 overflow-hidden" id="open-closed-toggle"></div>
-      <div class="flex gap-2 flex-wrap" id="category-filters"></div>
     </div>
-    <div class="flex gap-2 px-6 pb-3 flex-wrap shrink-0 hidden" id="repos"></div>
     <div class="relative flex-1 min-h-0 overflow-hidden">
       <div class="flex flex-col h-full">
         <div class="px-6 pb-6 overflow-x-auto flex-1">
@@ -237,39 +235,7 @@ tailwind.config = {
   <!-- ══ Coverage Matrix Panel ══ -->
   <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-coverage">
     <div class="px-6 py-6 overflow-y-auto flex-1 text-[13px] leading-relaxed text-txt">
-      <h2 class="text-lg font-bold mb-4">スキャン状況</h2>
-
-      <p class="text-txt-muted text-xs mb-6">
-        delta scan は <strong>広さ</strong>（対象ファイル）× <strong>深さ</strong>（依存の辿り方）× <strong>質</strong>（検出手法）の3軸で構成されます。<br>
-        各軸を独立に指定できます: <code class="bg-surface-2 px-1.5 py-0.5 rounded">delta scan --scope all --depth graph --lens security</code>
-      </p>
-
-      <!-- 軸の説明 -->
-      <div class="grid grid-cols-3 gap-3 mb-6">
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-accent text-xs mb-2">広さ (--scope)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">diff</code> <span class="text-txt-muted">git差分のみ（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">smart</code> <span class="text-txt-muted">git履歴で高リスク優先</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">all</code> <span class="text-txt-muted">全ファイル</span></div>
-          </div>
-        </div>
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-xs mb-2" style="color:#60a5fa">深さ (--depth)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">1hop</code> <span class="text-txt-muted">直接の依存のみ（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">graph</code> <span class="text-txt-muted">構造グラフで全体解析</span></div>
-          </div>
-        </div>
-        <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
-          <h4 class="font-bold text-xs mb-2" style="color:#e879f9">質 (--lens)</h4>
-          <div class="space-y-1.5 text-[11px]">
-            <div><code class="bg-surface-1 px-1 rounded">default</code> <span class="text-txt-muted">構造矛盾検査（デフォルト）</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">stress</code> <span class="text-txt-muted">仮想改修で壊れ方を実験</span></div>
-            <div><code class="bg-surface-1 px-1 rounded">security</code> <span class="text-txt-muted">認証・権限・入力検証に特化</span></div>
-          </div>
-        </div>
-      </div>
+      <h2 class="text-lg font-bold mb-4">コマンド一覧</h2>
 
       <!-- 統合カバレッジマトリクス: 行=広さ×深さ, 列=質 -->
       <div>
@@ -287,6 +253,39 @@ tailwind.config = {
           <span class="inline-block w-2 h-2 rounded-sm bg-accent mr-1 align-middle"></span>実行済み
           <span class="inline-block w-2 h-2 rounded-sm bg-surface-4 mr-1 ml-3 align-middle"></span>未実行 — コマンドをコピーして実行
         </p>
+
+        <p class="text-txt-muted text-xs mt-6 mb-4">
+          delta scan は <strong>広さ</strong>（対象ファイル）× <strong>深さ</strong>（依存の辿り方）× <strong>質</strong>（検出手法）の3軸で構成されます。<br>
+          各軸を独立に指定できます: <code class="bg-surface-2 px-1.5 py-0.5 rounded">delta scan --scope wide --depth graph --lens security</code>
+        </p>
+
+        <!-- 軸の説明 -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
+            <h4 class="font-bold text-accent text-xs mb-2">広さ (--scope)</h4>
+            <div class="space-y-1.5 text-[11px]">
+              <div><code class="bg-surface-1 px-1 rounded">diff</code> <span class="text-txt-muted">直近3ヶ月の変更（デフォルト、--since で期間変更可）</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">pr</code> <span class="text-txt-muted">ベースブランチからの全差分</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">smart</code> <span class="text-txt-muted">git履歴で高リスク優先</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">wide</code> <span class="text-txt-muted">全ファイル</span></div>
+            </div>
+          </div>
+          <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
+            <h4 class="font-bold text-xs mb-2" style="color:#60a5fa">深さ (--depth)</h4>
+            <div class="space-y-1.5 text-[11px]">
+              <div><code class="bg-surface-1 px-1 rounded">1hop</code> <span class="text-txt-muted">直接の依存のみ（デフォルト）</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">graph</code> <span class="text-txt-muted">構造グラフで全体解析</span></div>
+            </div>
+          </div>
+          <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
+            <h4 class="font-bold text-xs mb-2" style="color:#e879f9">質 (--lens)</h4>
+            <div class="space-y-1.5 text-[11px]">
+              <div><code class="bg-surface-1 px-1 rounded">default</code> <span class="text-txt-muted">構造矛盾検査（デフォルト）</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">stress</code> <span class="text-txt-muted">仮想改修で壊れ方を実験</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">security</code> <span class="text-txt-muted">認証・権限・入力検証に特化</span></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -751,8 +750,6 @@ if (isSimpleMode) {
 // ══════════════════════════════════════
 // Findings Panel
 // ══════════════════════════════════════
-let activeRepos = new Set();
-let activeCategory = "";
 let showClosed = false;  // GitHub-style: Open by default
 let sortCol = "severity";
 let sortAsc = false;
@@ -789,50 +786,6 @@ const CLOSED_STATUSES = new Set(["merged", "wontfix", "false_positive", "duplica
   el.appendChild(closedBtn);
 })();
 
-// Category filter (taxonomies-aware)
-(function initCategoryFilters() {
-  const el = document.getElementById("category-filters");
-  const categories = [
-    {key: "", label: "すべて"},
-    {key: "certainty:definite", label: "検出"},
-    {key: "certainty:probable", label: "推定"},
-    {key: "certainty:uncertain", label: "未確認"},
-    {key: "status:verified", label: "✓ 検証済み"},
-    {key: "source:deep_scan", label: "Deep Scan"},
-  ];
-  categories.forEach(cat => {
-    const btn = mkBtn(cat.label, cat.key === "");
-    btn.dataset.cat = cat.key;
-    btn.onclick = () => {
-      activeCategory = cat.key;
-      el.querySelectorAll("button").forEach(b => {
-        b.classList.remove("bg-link","border-link","text-white");
-        b.classList.add("bg-surface-4","border-surface-3","text-txt");
-      });
-      btn.classList.remove("bg-surface-4","border-surface-3","text-txt");
-      btn.classList.add("bg-link","border-link","text-white");
-      render();
-    };
-    el.appendChild(btn);
-  });
-})();
-
-(function initRepos() {
-  const repos = {};
-  FINDINGS.forEach(f => { const r = f.repo || "?"; repos[r] = (repos[r]||0)+1; });
-  const el = document.getElementById("repos");
-  Object.entries(repos).sort((a,b) => b[1]-a[1]).forEach(([r, c]) => {
-    const chip = document.createElement("div");
-    chip.className = "bg-surface-2 border border-surface-3 rounded-md px-3 py-1.5 text-xs cursor-pointer hover:border-link transition-all";
-    chip.innerHTML = r + '<span class="text-link font-bold ml-1">' + c + "</span>";
-    chip.onclick = () => {
-      if (activeRepos.has(r)) { activeRepos.delete(r); chip.classList.remove("!bg-link/20","!border-link"); }
-      else { activeRepos.add(r); chip.classList.add("!bg-link/20","!border-link"); }
-      render();
-    };
-    el.appendChild(chip);
-  });
-})();
 
 document.querySelectorAll("#findings-table thead th").forEach(th => {
   th.onclick = () => {
@@ -862,17 +815,6 @@ function render() {
     const status = f.status || "found";
     const isClosed = CLOSED_STATUSES.has(status);
     if (showClosed !== isClosed) return false;
-    if (activeRepos.size && !activeRepos.has(f.repo || "?")) return false;
-    if (activeCategory) {
-      const [taxKey, taxVal] = activeCategory.split(":");
-      if (taxKey === "status") {
-        if (status !== taxVal) return false;
-      } else {
-        const tx = f.taxonomies || {};
-        const v = tx[taxKey];
-        if (Array.isArray(v) ? !v.includes(taxVal) : v !== taxVal) return false;
-      }
-    }
     return true;
   });
   data.sort((a, b) => {
@@ -1116,7 +1058,7 @@ function renderTradeoffs() {
   // --- Flow section ---
   // --- Unified matrix: rows = scope × depth, cols = lens ---
   const lenses = ["default", "stress", "security"];
-  const scopes = ["diff", "smart", "all"];
+  const scopes = ["diff", "pr", "smart", "wide"];
   const depths = ["1hop", "graph"];
 
   // Build row keys: scope × depth
@@ -1142,19 +1084,20 @@ function renderTradeoffs() {
   // Scope group labels for separator rows
   const scopeGroupLabels = {
     "diff": "デグレ検知（フロー型）",
+    "pr": "PRレビュー（フロー型）",
     "smart": "コードベース診断（ストック型）",
   };
 
   tbody.innerHTML = "";
   let doneCount = 0;
-  const totalCount = rowKeys.length * lenses.length; // 18
+  const totalCount = rowKeys.length * lenses.length; // 24
 
   let prevScope = null;
   rowKeys.forEach(rk => {
     // Insert scope group separator
     if (rk.scope !== prevScope) {
       if (scopeGroupLabels[rk.scope]) {
-        const isFlow = rk.scope === "diff";
+        const isFlow = rk.scope === "diff" || rk.scope === "pr";
         const dotColor = isFlow ? "bg-link" : "bg-accent";
         tbody.innerHTML += '<tr><td colspan="4" class="px-3 py-2 border border-surface-3 bg-surface-1 text-[11px] font-semibold">'
           + '<span class="w-2 h-2 rounded-full ' + dotColor + ' inline-block mr-1.5 align-middle"></span>'

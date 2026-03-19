@@ -39,44 +39,76 @@ cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator imp
 
 判定したペルソナを `{persona}` 変数として以降のステップで使う。
 
-## Step 1: Determine scope and dry-run
+## Step 0.4: Detect time window (--since)
 
-Determine the target repo path (default: current working directory).
-Run dry-run first to show what will be sent to the LLM:
+If the user mentions a time period, map it to `--since`:
 
+| Natural language | `--since` |
+|-----------------|-----------|
+| 「1週間」「last week」 | `1week` |
+| 「2週間」 | `2weeks` |
+| 「1ヶ月」「先月から」 | `1month` |
+| 「3ヶ月」「四半期」(or no mention) | `3months` (default) |
+| 「半年」「6ヶ月」 | `6months` |
+| 「1年」「去年から」 | `1year` |
+| 「2年」 | `2years` |
+| 「N日」 | `Ndays` |
+
+If no time period is mentioned, the default is `3months`.
+
+## Step 0.5: Detect PR mode
+
+If the user mentions PR/プルリク/レビュー (e.g. "PRレビューして", "PR scan", "review this PR", "プルリクチェック"), use `--scope pr` instead of the default diff mode.
+
+**PR mode auto-detection:**
+- User explicitly says PR-related keywords → `--scope pr`
+- Current branch is not main/master AND user says "scan" without specifying scope → suggest PR mode
+- `GITHUB_BASE_REF` is set (CI environment) → `--scope pr` automatically
+
+If base branch is ambiguous, add `--base origin/{branch}`.
+
+## Step 1: Determine scope and run
+
+**CRITICAL: ALWAYS let cli.py handle file selection. NEVER manually pick files with `--files`.**
+The CLI has built-in logic for file selection (`--since 3months` default, `--scope smart` fallback, batching, etc.). Passing `--files` manually bypasses all of this and drastically reduces scan quality.
+
+**Normal mode (diff — default: 3 months of history):**
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --dry-run --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --verbose 2>&1
 ```
 
-If no changed files are found, suggest `--files` to specify files manually.
+**Custom period (e.g. 1 year):**
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --since 1year --verbose 2>&1
+```
+
+**PR mode:**
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --scope pr --verbose 2>&1
+```
+
+**If cli.py reports 0 files** (「直近 3months に変更されたソースファイルがありません」):
+The repo has no recent commits (fork, archive, etc.). Re-run with `--scope smart`:
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --scope smart --verbose 2>&1
+```
+Show: `📅 直近3ヶ月の変更なし → smart mode（git履歴の高リスクファイル）でスキャンします`
 
 ## Step 2: Auto-proceed (no confirmation needed)
 
-Show a brief one-line summary and immediately proceed to Step 3:
-- `⏳ N files / Xk chars — scanning...`
-
 **Do NOT ask the user to confirm.** delta-scan uses claude -p ($0) so there is no cost concern.
-
-If context exceeds 100K chars, show a warning but still proceed:
-- `⚠ 100K+ chars — results may degrade. Use --files to narrow scope next time.`
-
-Only stop and ask if context exceeds 200K chars (likely an error in scope detection).
-
-## Step 3: Run the actual scan
-
-```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --verbose --severity {severity} 2>&1
-```
-
+The CLI command in Step 1 already runs the full scan (no separate dry-run step needed).
 Set Bash timeout to 300000 (5 min) — LLM calls can be slow.
 
-Common options:
+Additional options (append to Step 1 command if needed):
+- `--since 6months` — time window (default: 3months for diff mode)
+- `--scope pr` — scan all files changed since base branch (for PR review)
+- `--scope smart` — git history priority (auto-fallback when no recent changes)
+- `--scope wide` — entire codebase, batched
+- `--base origin/develop` — specify base branch (default: auto-detect)
 - `--severity high` (default) / `medium` / `low`
-- `--files path/a.ts path/b.ts` — specific files instead of git diff
-- `--diff-target HEAD` — git ref to diff against
 - `--format json` — machine-readable output
-- `--model claude-sonnet-4-20250514` — detection model (default)
-- `--semantic` — enable semantic search (see below)
+- `--semantic` — enable semantic search
 
 ## Step 4: Interpret exit code
 

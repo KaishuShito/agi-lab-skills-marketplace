@@ -107,7 +107,7 @@ def append_scan_history(
     scan_type: str = "existing",  # "existing" | "diff" | "stress" | "deep"
     finding_ids: list[str] | None = None,
     patterns_found: list[str] | None = None,
-    scope: str = "",    # 3-axis: "diff" | "smart" | "all"
+    scope: str = "",    # 3-axis: "diff" | "smart" | "wide"
     depth: str = "",    # 3-axis: "1hop" | "graph"
     lens: str = "",     # 3-axis: "default" | "stress" | "security"
 ) -> None:
@@ -134,7 +134,7 @@ def append_scan_history(
     elif scan_type in ("existing", "deep"):
         record["scope"] = "smart"
     elif scan_type == "stress":
-        record["scope"] = "all"
+        record["scope"] = "wide"
     if depth:
         record["depth"] = depth
     elif scan_type == "deep":
@@ -173,32 +173,48 @@ def load_scan_history(base_path: str | Path) -> list[dict]:
 
 
 def compute_scan_depth(base_path: str | Path) -> dict:
-    """Compute scan depth/confidence from history.
+    """Compute scan depth/confidence from history and coverage matrix.
 
-    Returns dict with: scan_count, total_clusters, grade, last_scan.
-    Grade: D(初回) → C(2-3回) → B(4-6回) → A(7+回)
+    Returns dict with: scan_count, total_clusters, grade, last_scan,
+                       cells_done, cells_total.
+
+    Grade is based on how many of the 18 coverage-matrix cells have been
+    executed, not just raw scan count:
+        -  : 0 cells
+        D  : 1-3 cells
+        C  : 4-9 cells
+        B  : 10-17 cells, OR all 18 but avg runs per cell < 2
+        A  : all 18 cells AND avg runs per cell >= 2
     """
     history = load_scan_history(base_path)
     scan_count = len(history)
     total_clusters = sum(r.get("clusters", 0) for r in history)
     last_scan = history[-1].get("timestamp", "")[:16].replace("T", " ") if history else ""
 
-    if scan_count == 0:
+    matrix = compute_coverage_matrix(base_path)
+    cells_done = matrix.get("cells_done", 0)
+    cells_total = matrix.get("cells_total", 24)
+    total_runs = sum(c.get("count", 0) for c in matrix.get("cells", []))
+
+    if cells_done == 0:
         grade = "-"
-    elif scan_count == 1:
+    elif cells_done <= 3:
         grade = "D"
-    elif scan_count <= 3:
+    elif cells_done <= 9:
         grade = "C"
-    elif scan_count <= 6:
+    elif cells_done < cells_total:
         grade = "B"
     else:
-        grade = "A"
+        avg_runs = total_runs / cells_total if cells_total > 0 else 0
+        grade = "A" if avg_runs >= 2 else "B"
 
     return {
         "scan_count": scan_count,
         "total_clusters": total_clusters,
         "grade": grade,
         "last_scan": last_scan,
+        "cells_done": cells_done,
+        "cells_total": cells_total,
     }
 
 
@@ -210,22 +226,22 @@ def compute_scan_depth(base_path: str | Path) -> dict:
 _SCAN_TYPE_TO_AXES = {
     "diff":     {"scope": "diff",  "depth": "1hop",  "lens": "default"},
     "existing": {"scope": "smart", "depth": "1hop",  "lens": "default"},
-    "deep":     {"scope": "all",   "depth": "graph", "lens": "default"},
-    "stress":   {"scope": "all",   "depth": "1hop",  "lens": "stress"},
+    "deep":     {"scope": "wide",  "depth": "graph", "lens": "default"},
+    "stress":   {"scope": "wide",  "depth": "1hop",  "lens": "stress"},
 }
 
 # All valid axis values
-_SCOPES = ["diff", "smart", "all"]
+_SCOPES = ["diff", "pr", "smart", "wide"]
 _DEPTHS = ["1hop", "graph"]
 _LENSES = ["default", "stress", "security"]
 
 # Human-readable labels
-_SCOPE_LABELS = {"diff": "変更差分", "smart": "履歴優先", "all": "全ファイル"}
+_SCOPE_LABELS = {"diff": "変更差分", "pr": "PR差分", "smart": "履歴優先", "wide": "全ファイル"}
 _DEPTH_LABELS = {"1hop": "1-hop依存", "graph": "構造グラフ"}
 _LENS_LABELS = {"default": "構造矛盾検査", "stress": "ストレステスト", "security": "セキュリティ"}
 
 # Command fragments per axis value
-_SCOPE_FLAGS = {"diff": "", "smart": "--scope smart", "all": "--scope all"}
+_SCOPE_FLAGS = {"diff": "", "pr": "--scope pr", "smart": "--scope smart", "wide": "--scope wide"}
 _DEPTH_FLAGS = {"1hop": "", "graph": "--depth graph"}
 _LENS_FLAGS = {"default": "", "stress": "--lens stress", "security": "--lens security"}
 
@@ -233,7 +249,7 @@ _LENS_FLAGS = {"default": "", "stress": "--lens stress", "security": "--lens sec
 def compute_coverage_matrix(base_path: str | Path) -> dict:
     """Compute a 3-axis coverage matrix from scan history.
 
-    Unified matrix: rows = scope × depth (6 rows), cols = lens (3 cols) = 18 cells.
+    Unified matrix: rows = scope × depth (8 rows), cols = lens (3 cols) = 24 cells.
 
     Returns:
         {
@@ -248,19 +264,28 @@ def compute_coverage_matrix(base_path: str | Path) -> dict:
                 ...
             ],
             "cells_done": 3,     # 実行済みセル数
-            "cells_total": 18,   # 全セル数
+            "cells_total": 24,   # 全セル数 (4 scopes × 2 depths × 3 lenses)
         }
     """
     history = load_scan_history(Path(base_path))
 
-    # Count per (scope, depth, lens) combination
+    # Count per (scope, depth, lens) combination.
+    # Only count records with findings_count > 0 (successful scans).
     counts: dict[tuple, list] = {}
     for record in history:
+        if record.get("findings_count", 0) <= 0:
+            continue
         scan_type = record.get("scan_type", "diff")
-        # Support new-style records with explicit axes
         if "scope" in record:
+            raw_scope = record["scope"]
+            if raw_scope == "files":
+                scope_norm = "smart"
+            elif raw_scope == "all":
+                scope_norm = "wide"
+            else:
+                scope_norm = raw_scope
             axes = {
-                "scope": record["scope"],
+                "scope": scope_norm,
                 "depth": record.get("depth", "1hop"),
                 "lens": record.get("lens", "default"),
             }
@@ -301,14 +326,14 @@ def compute_coverage_matrix(base_path: str | Path) -> dict:
                     "count": count,
                     "last_run": last_run,
                     "command": command,
-                    "is_flow": (scope == "diff"),
+                    "is_flow": scope in ("diff", "pr"),
                 }
                 cells.append(cell)
 
                 if count > 0:
                     cells_done += 1
 
-    cells_total = len(_SCOPES) * len(_DEPTHS) * len(_LENSES)  # 18
+    cells_total = len(_SCOPES) * len(_DEPTHS) * len(_LENSES)  # 24
 
     return {
         "cells": cells,
@@ -441,6 +466,11 @@ class Finding:
     churn_6m: int = 0       # git commits touching file in last 6 months
     fan_out: int = 0        # number of files referencing this file
     total_lines: int = 0    # line count of primary file (for entropy)
+    contradiction: str = ""  # LLM raw: what the structural contradiction is
+    impact: str = ""         # LLM raw: user/system impact
+    user_impact: str = ""    # LLM raw: impact in user terms
+    internal_evidence: str = ""  # LLM raw: code evidence for the contradiction
+    file_b: str = ""         # second file involved in the contradiction
 
 
 def _findings_dir(base_path: str | Path) -> Path:
@@ -1584,6 +1614,8 @@ def generate_dashboard(
         scan_count=scan_depth["scan_count"],
         scan_grade=scan_depth["grade"],
         scan_total_clusters=scan_depth["total_clusters"],
+        scan_cells_done=scan_depth.get("cells_done", 0),
+        scan_cells_total=scan_depth.get("cells_total", 24),
         scan_last=scan_depth["last_scan"],
         active_debt=debt["active_debt"],
         resolution_rate=debt["resolution_rate"],

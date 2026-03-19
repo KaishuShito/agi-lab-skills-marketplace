@@ -21,6 +21,7 @@ Tiered confidence (inspired by GitNexus resolution-context.ts):
 """
 
 import json
+import os
 import re
 import subprocess
 from enum import Enum
@@ -117,6 +118,89 @@ def _is_git_repo(path: str) -> bool:
     return result.returncode == 0
 
 
+def _detect_base_branch(repo_path: str) -> str | None:
+    """Auto-detect the base branch for PR diff.
+
+    Priority:
+      1. GITHUB_BASE_REF (set by GitHub Actions on pull_request events)
+      2. Heuristic: origin/main or origin/master
+    """
+    env_base = os.environ.get("GITHUB_BASE_REF")
+    if env_base:
+        return f"origin/{env_base}"
+
+    for candidate in ["origin/main", "origin/master"]:
+        r = subprocess.run(
+            ["git", "rev-parse", "--verify", candidate],
+            capture_output=True, text=True, cwd=repo_path, timeout=5,
+        )
+        if r.returncode == 0:
+            return candidate
+    return None
+
+
+def get_pr_changed_files(
+    repo_path: str,
+    base_ref: str | None = None,
+) -> tuple[list[str], str]:
+    """Get files changed in the entire PR (HEAD vs merge-base of base branch).
+
+    Returns (file_list, resolved_base_ref).
+    """
+    if not _is_git_repo(repo_path):
+        return [], ""
+
+    if not base_ref:
+        base_ref = _detect_base_branch(repo_path)
+    if not base_ref:
+        return [], ""
+
+    merge_base = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        capture_output=True, text=True, cwd=repo_path, timeout=10,
+    )
+    if merge_base.returncode != 0:
+        return [], base_ref
+
+    mb_sha = merge_base.stdout.strip()
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", mb_sha, "HEAD"],
+        capture_output=True, text=True, cwd=repo_path, timeout=10,
+    )
+    files = sorted({
+        line.strip() for line in result.stdout.strip().split("\n") if line.strip()
+    })
+    return files, base_ref
+
+
+def get_pr_diff_content(
+    repo_path: str,
+    base_ref: str | None = None,
+) -> str:
+    """Get the full unified diff for a PR (merge-base..HEAD)."""
+    if not _is_git_repo(repo_path):
+        return ""
+    if not base_ref:
+        base_ref = _detect_base_branch(repo_path)
+    if not base_ref:
+        return ""
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", base_ref, "HEAD"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        if merge_base.returncode != 0:
+            return ""
+        mb_sha = merge_base.stdout.strip()
+        result = subprocess.run(
+            ["git", "diff", mb_sha, "HEAD"],
+            capture_output=True, text=True, cwd=repo_path, timeout=30,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
     """Get list of changed files from git diff.
 
@@ -156,6 +240,50 @@ def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
             capture_output=True, text=True, cwd=repo_path,
         )
         for line in result.stdout.strip().split("\n"):
+            if line.strip():
+                files.add(line.strip())
+
+    return sorted(files)
+
+
+def get_recent_changed_files(repo_path: str, since: str = "3months") -> list[str]:
+    """Get all files changed in the last N period from git log.
+
+    Args:
+        repo_path: Path to the repository root
+        since: Git-compatible time spec, e.g. "3months", "6months", "1year", "90days"
+
+    Returns:
+        Sorted list of unique relative file paths changed in the period.
+    """
+    if not _is_git_repo(repo_path):
+        return []
+
+    # Normalize shorthand: "3months" → "3 months", "1year" → "1 year"
+    import re as _re
+    normalized = _re.sub(r"(\d+)(months?|years?|weeks?|days?)", r"\1 \2", since)
+
+    result = subprocess.run(
+        ["git", "log", f"--since={normalized}", "--name-only",
+         "--diff-filter=ACMR", "--pretty=format:"],
+        capture_output=True, text=True, cwd=repo_path, timeout=30,
+    )
+    files = {
+        line.strip() for line in result.stdout.split("\n")
+        if line.strip() and not line.startswith("commit ")
+    }
+
+    # Also include current staged/unstaged changes
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+        capture_output=True, text=True, cwd=repo_path,
+    )
+    unstaged = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR"],
+        capture_output=True, text=True, cwd=repo_path,
+    )
+    for output in [staged.stdout, unstaged.stdout]:
+        for line in output.strip().split("\n"):
             if line.strip():
                 files.add(line.strip())
 
@@ -1309,6 +1437,56 @@ def get_priority_batches(
     for _score, f, size in scored[:100]:  # Top 100 files max
         if size > max_batch_chars // 2:
             # Large file → solo batch
+            batches.append([f])
+        else:
+            if current_size + size > max_batch_chars:
+                if current_batch:
+                    batches.append(current_batch)
+                current_batch = [f]
+                current_size = size
+            else:
+                current_batch.append(f)
+                current_size += size
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def _pack_batches(
+    repo_path: str,
+    files: list[str],
+    *,
+    max_batch_chars: int = MAX_CONTEXT_CHARS,
+) -> list[list[str]]:
+    """Pack files into batches by size.
+
+    Simple greedy packing: large files get their own batch,
+    smaller files are packed until max_batch_chars is reached.
+    Used by --scope wide to batch-split all source files.
+    """
+    repo = Path(repo_path)
+    sized: list[tuple[str, int]] = []
+    for f in files:
+        fpath = repo / f
+        try:
+            size = fpath.stat().st_size
+        except OSError:
+            continue
+        if size < 200:
+            continue
+        sized.append((f, size))
+
+    # Sort by size descending so large files are placed first
+    sized.sort(key=lambda x: x[1], reverse=True)
+
+    batches: list[list[str]] = []
+    current_batch: list[str] = []
+    current_size = 0
+
+    for f, size in sized:
+        if size > max_batch_chars // 2:
             batches.append([f])
         else:
             if current_size + size > max_batch_chars:

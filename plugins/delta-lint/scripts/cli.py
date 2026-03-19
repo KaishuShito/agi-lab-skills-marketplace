@@ -76,6 +76,55 @@ from findings import cmd_findings
 
 
 # ---------------------------------------------------------------------------
+# Batch progress helpers
+# ---------------------------------------------------------------------------
+
+def _count_findings_on_disk(repo_path: str) -> int:
+    """Count total findings currently stored in .delta-lint/findings/*.jsonl."""
+    findings_dir = Path(repo_path) / ".delta-lint" / "findings"
+    if not findings_dir.exists():
+        return 0
+    total = 0
+    for jf in findings_dir.glob("*.jsonl"):
+        try:
+            total += sum(1 for line in jf.read_text().splitlines() if line.strip())
+        except Exception:
+            pass
+    return total
+
+
+def _format_elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m{s:02d}s" if m else f"{s}s"
+
+
+def _print_batch_progress(
+    batch_idx: int,
+    total_batches: int,
+    batch_size: int,
+    total_findings: int,
+    elapsed: float,
+    mode_label: str = "Wide",
+):
+    """Print a rich progress summary line after each batch completes."""
+    done = batch_idx + 1
+    pct = done * 100 // total_batches
+    bar_len = 20
+    filled = bar_len * done // total_batches
+    bar = "█" * filled + "░" * (bar_len - filled)
+    eta_str = ""
+    if done < total_batches and elapsed > 0:
+        avg_per_batch = elapsed / done
+        remaining = avg_per_batch * (total_batches - done)
+        eta_str = f"  ETA {_format_elapsed(remaining)}"
+    print(
+        f"\r  [{bar}] {done}/{total_batches} batches ({pct}%) │ "
+        f"累積 {total_findings} findings │ {_format_elapsed(elapsed)}{eta_str}",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Environment pre-check — auto-install & guided setup
 # ---------------------------------------------------------------------------
 
@@ -1032,10 +1081,37 @@ def cmd_init(args):
     except Exception:
         pass
 
-    # Step 2: Scan existing contradictions in hotspot clusters → findings.jsonl
-    #   Progressive: open dashboard early, update as each cluster completes
+    # Step 2: Parallel — scan_existing (findings) + stress test (landmine map)
     if hotspots:
-        print("\n  既存コードの矛盾をスキャン中...", file=sys.stderr)
+        import threading
+
+        # --- Stress test thread (landmine map) ---
+        stress_result = {"error": None, "added": 0}
+
+        def _run_stress_test_bg():
+            try:
+                from stress_test import run_stress_test
+                run_stress_test(
+                    repo_path,
+                    backend="cli",
+                    verbose=args.verbose,
+                    parallel=1,
+                    lang="en",
+                    structure=structure,
+                    skip_existing=True,
+                )
+                from findings import ingest_stress_test_debt
+                added = ingest_stress_test_debt(repo_path)
+                stress_result["added"] = len(added) if added else 0
+            except Exception as e:
+                stress_result["error"] = str(e)
+
+        print("\n  🔨 ストレステスト（地雷マップ）をバックグラウンドで開始...", file=sys.stderr)
+        stress_thread = threading.Thread(target=_run_stress_test_bg, daemon=True)
+        stress_thread.start()
+
+        # --- scan_existing (findings → JSONL → dashboard) on main thread ---
+        print("  🔍 既存コードの矛盾をスキャン中...", file=sys.stderr)
         try:
             from stress_test import scan_existing
             from findings import Finding, generate_id, add_finding, generate_dashboard
@@ -1097,7 +1173,7 @@ def cmd_init(args):
                 is_complete = (completed == total)
                 progress = {"completed": completed, "total": total, "is_complete": is_complete}
 
-                # Build treemap JSON if results.json exists (from stress test)
+                # Build treemap JSON if results.json exists (from stress test running in parallel)
                 _treemap = None
                 _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
                 if _results_json.exists():
@@ -1121,33 +1197,59 @@ def cmd_init(args):
 
             print(f"  🔍 {n_findings} 件検出、{n_saved} 件を findings に記録", file=sys.stderr)
 
-            # Record scan history (with finding_ids for Chao1 coverage estimation)
-            try:
-                from findings import append_scan_history
-                append_scan_history(
-                    repo_path,
-                    clusters=total,
-                    findings_count=n_findings,
-                    scan_type="existing",
-                    finding_ids=all_fids,
-                    patterns_found=all_patterns,
-                    scope="smart",
-                    depth="1hop",
-                    lens="default",
-                )
-            except Exception:
-                pass
+            if n_findings > 0:
+                try:
+                    from findings import append_scan_history
+                    append_scan_history(
+                        repo_path,
+                        clusters=total,
+                        findings_count=n_findings,
+                        scan_type="existing",
+                        finding_ids=all_fids,
+                        patterns_found=all_patterns,
+                        scope="smart",
+                        depth="1hop",
+                        lens="default",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             if args.verbose:
                 import traceback
                 traceback.print_exc()
             print(f"  [warn] Existing scan failed: {e}", file=sys.stderr)
 
+        # --- Wait for stress test to finish ---
+        if stress_thread.is_alive():
+            print("  ⏳ ストレステスト完了を待機中...", file=sys.stderr)
+        stress_thread.join()
+
+        if stress_result["error"]:
+            print(f"  [warn] ストレステスト失敗: {stress_result['error']}", file=sys.stderr)
+        else:
+            added = stress_result["added"]
+            print(f"  🗺️  地雷マップ生成完了", file=sys.stderr)
+            if added:
+                print(f"    ストレステスト結果から {added} 件の技術的負債を登録", file=sys.stderr)
+
+            # Final dashboard regeneration with treemap data from completed stress test
+            try:
+                _treemap = None
+                _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
+                if _results_json.exists():
+                    from visualize import build_treemap_json
+                    _treemap = build_treemap_json(str(_results_json))
+                if _treemap:
+                    _dash_tpl = getattr(args, '_dashboard_template', "")
+                    generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
+            except Exception:
+                pass
+
     print("\n── δ-lint ── 初期化完了 ✅", file=sys.stderr)
     print("  次のステップ:", file=sys.stderr)
     print("    delta view          — ダッシュボードを開く", file=sys.stderr)
     print("    delta scan                    — 変更ファイルをスキャン", file=sys.stderr)
-    print("    delta scan --scope all        — 全ファイルスキャン", file=sys.stderr)
+    print("    delta scan --scope wide       — 全ファイルスキャン（バッチ分割）", file=sys.stderr)
     print("    delta scan --lens stress      — ストレステスト（地雷マップ生成）", file=sys.stderr)
     print("    delta scan --lens security    — セキュリティ重点スキャン", file=sys.stderr)
     print("    delta init          — 再実行でカバレッジ拡大", file=sys.stderr)
@@ -1483,16 +1585,193 @@ def cmd_scan(args):
         source_files = args.files
         if args.verbose:
             print(f"Scanning {len(source_files)} specified file(s)", file=sys.stderr)
-    elif scope == "all":
-        # All source files in repo
+    elif scope == "pr":
+        # PR mode: all files changed since merge-base with the base branch
+        from retrieval import get_pr_changed_files, _pack_batches
+        base_ref = getattr(args, 'base', None)
+        pr_files, resolved_base = get_pr_changed_files(repo_path, base_ref)
+        if not pr_files:
+            print("PR差分が見つかりません。", file=sys.stderr)
+            if not resolved_base:
+                print("  ベースブランチが検出できません。--base origin/main 等で指定してください。", file=sys.stderr)
+            else:
+                print(f"  ベースブランチ: {resolved_base} — HEAD との差分が空です。", file=sys.stderr)
+            sys.exit(0)
+        source_files_pr = filter_source_files(pr_files)
+        if not source_files_pr:
+            print(f"PR差分 {len(pr_files)} ファイル中、ソースファイルがありません。", file=sys.stderr)
+            sys.exit(0)
+        batches = _pack_batches(repo_path, source_files_pr)
+        if not batches:
+            print("No scannable files after batching.", file=sys.stderr)
+            sys.exit(0)
+        total_files = sum(len(b) for b in batches)
+        print(f"  🔀 PR mode: {resolved_base}...HEAD — {total_files} ファイルを {len(batches)} バッチに分割",
+              file=sys.stderr)
+        for i, batch in enumerate(batches):
+            print(f"    Batch {i+1}: {len(batch)} files", file=sys.stderr)
+            if args.verbose:
+                for f in batch:
+                    print(f"      {f}", file=sys.stderr)
+
+        # Run batches sequentially — show incremental progress + refresh dashboard
+        import subprocess
+        import time as _time
+        script_path = Path(__file__).resolve()
+        all_high = 0
+        findings_before = _count_findings_on_disk(repo_path)
+        t0 = _time.monotonic()
+        for i, batch in enumerate(batches):
+            print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
+            cmd = [
+                sys.executable, str(script_path), "scan",
+                "--repo", repo_path,
+                "--scope", "pr",
+                "--files", *batch,
+                "--severity", getattr(args, 'severity', 'high'),
+                "--lang", getattr(args, 'lang', 'en'),
+            ]
+            if base_ref:
+                cmd.extend(["--base", resolved_base])
+            _depth = getattr(args, '_depth', '1hop')
+            _lens = getattr(args, '_lens', 'default')
+            if _depth != "1hop":
+                cmd.extend(["--depth", _depth])
+            if _lens != "default":
+                cmd.extend(["--lens", _lens])
+            _since = getattr(args, 'since', None)
+            if _since:
+                cmd.extend(["--since", _since])
+            if getattr(args, 'verbose', False):
+                cmd.append("--verbose")
+            if getattr(args, 'no_cache', False):
+                cmd.append("--no-cache")
+            if getattr(args, 'no_verify', False):
+                cmd.append("--no-verify")
+            if getattr(args, 'autofix', False):
+                cmd.append("--autofix")
+            result = subprocess.run(cmd, cwd=repo_path)
+            if result.returncode == 1:
+                all_high += 1
+            current_findings = _count_findings_on_disk(repo_path)
+            _print_batch_progress(
+                i, len(batches), len(batch),
+                current_findings, _time.monotonic() - t0,
+                mode_label="PR",
+            )
+            findings_before = current_findings
+        elapsed_total = _time.monotonic() - t0
+        final_findings = _count_findings_on_disk(repo_path)
+        new_findings = final_findings - findings_before
+        print(
+            f"\n── PR scan 完了: {resolved_base}...HEAD │ {len(batches)} バッチ │ "
+            f"{final_findings} findings │ {_format_elapsed(elapsed_total)} ──",
+            file=sys.stderr,
+        )
+        if new_findings > 0:
+            try:
+                from findings import append_scan_history
+                append_scan_history(
+                    repo_path,
+                    clusters=total_files,
+                    findings_count=new_findings,
+                    scan_type="existing",
+                    scope="pr",
+                    depth=getattr(args, '_depth', '1hop'),
+                    lens=getattr(args, '_lens', 'default'),
+                )
+            except Exception:
+                pass
+        sys.exit(1 if all_high > 0 else 0)
+    elif scope == "wide":
+        # Wide mode: all source files, batched like smart mode
         from surface_extractor import collect_all_source_files
+        from retrieval import _pack_batches
         all_files = collect_all_source_files(repo_path)
-        source_files = all_files if all_files else []
-        if not source_files:
+        if not all_files:
             print("No source files found in repository.", file=sys.stderr)
             sys.exit(0)
-        if args.verbose:
-            print(f"Scope=all: scanning all {len(source_files)} source file(s)", file=sys.stderr)
+        batches = _pack_batches(repo_path, all_files)
+        if not batches:
+            print("No scannable files after batching.", file=sys.stderr)
+            sys.exit(0)
+        total_files = sum(len(b) for b in batches)
+        print(f"  🔭 Wide mode: {total_files} ファイルを {len(batches)} バッチに分割", file=sys.stderr)
+        for i, batch in enumerate(batches):
+            print(f"    Batch {i+1}: {len(batch)} files", file=sys.stderr)
+            if args.verbose:
+                for f in batch:
+                    print(f"      {f}", file=sys.stderr)
+
+        # Run batches sequentially — show incremental progress + refresh dashboard
+        import subprocess
+        import time as _time
+        script_path = Path(__file__).resolve()
+        all_high = 0
+        findings_before = _count_findings_on_disk(repo_path)
+        t0 = _time.monotonic()
+        for i, batch in enumerate(batches):
+            print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
+            cmd = [
+                sys.executable, str(script_path), "scan",
+                "--repo", repo_path,
+                "--scope", "wide",
+                "--files", *batch,
+                "--severity", getattr(args, 'severity', 'high'),
+                "--lang", getattr(args, 'lang', 'en'),
+            ]
+            _depth = getattr(args, '_depth', '1hop')
+            _lens = getattr(args, '_lens', 'default')
+            if _depth != "1hop":
+                cmd.extend(["--depth", _depth])
+            if _lens != "default":
+                cmd.extend(["--lens", _lens])
+            _since = getattr(args, 'since', None)
+            if _since:
+                cmd.extend(["--since", _since])
+            if getattr(args, 'verbose', False):
+                cmd.append("--verbose")
+            if getattr(args, 'no_cache', False):
+                cmd.append("--no-cache")
+            if getattr(args, 'no_verify', False):
+                cmd.append("--no-verify")
+            if getattr(args, 'autofix', False):
+                cmd.append("--autofix")
+            result = subprocess.run(cmd, cwd=repo_path)
+            if result.returncode == 1:
+                all_high += 1
+            current_findings = _count_findings_on_disk(repo_path)
+            new_in_batch = current_findings - findings_before
+            _print_batch_progress(
+                i, len(batches), len(batch),
+                current_findings, _time.monotonic() - t0,
+                mode_label="Wide",
+            )
+            if new_in_batch > findings_before:
+                findings_before = current_findings
+        elapsed_total = _time.monotonic() - t0
+        final_findings = _count_findings_on_disk(repo_path)
+        new_findings = final_findings - findings_before
+        print(
+            f"\n── Wide scan 完了: {len(batches)} バッチ │ "
+            f"{final_findings} findings │ {_format_elapsed(elapsed_total)} ──",
+            file=sys.stderr,
+        )
+        if new_findings > 0:
+            try:
+                from findings import append_scan_history
+                append_scan_history(
+                    repo_path,
+                    clusters=sum(len(b) for b in batches),
+                    findings_count=new_findings,
+                    scan_type="existing",
+                    scope="wide",
+                    depth=getattr(args, '_depth', '1hop'),
+                    lens=getattr(args, '_lens', 'default'),
+                )
+            except Exception:
+                pass
+        sys.exit(1 if all_high > 0 else 0)
     elif scope == "smart" or getattr(args, 'smart', False):
         # Smart mode: select files by git history priority with batching
         # Run each batch as a separate subprocess with --files
@@ -1510,19 +1789,32 @@ def cmd_scan(args):
                 for f in batch:
                     print(f"      {f}", file=sys.stderr)
 
-        # Run batches sequentially using --files (reuses existing scan logic)
+        # Run batches sequentially — show incremental progress + refresh dashboard
         import subprocess
+        import time as _time
         script_path = Path(__file__).resolve()
         all_high = 0
+        findings_before = _count_findings_on_disk(repo_path)
+        t0 = _time.monotonic()
         for i, batch in enumerate(batches):
             print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
             cmd = [
                 sys.executable, str(script_path), "scan",
                 "--repo", repo_path,
+                "--scope", "smart",
                 "--files", *batch,
                 "--severity", getattr(args, 'severity', 'high'),
                 "--lang", getattr(args, 'lang', 'en'),
             ]
+            _depth = getattr(args, '_depth', '1hop')
+            _lens = getattr(args, '_lens', 'default')
+            if _depth != "1hop":
+                cmd.extend(["--depth", _depth])
+            if _lens != "default":
+                cmd.extend(["--lens", _lens])
+            _since = getattr(args, 'since', None)
+            if _since:
+                cmd.extend(["--since", _since])
             if getattr(args, 'verbose', False):
                 cmd.append("--verbose")
             if getattr(args, 'no_cache', False):
@@ -1534,23 +1826,56 @@ def cmd_scan(args):
             result = subprocess.run(cmd, cwd=repo_path)
             if result.returncode == 1:
                 all_high += 1
-        print(f"\n── Smart scan 完了: {len(batches)} バッチ実行 ──", file=sys.stderr)
+            current_findings = _count_findings_on_disk(repo_path)
+            new_in_batch = current_findings - findings_before
+            _print_batch_progress(
+                i, len(batches), len(batch),
+                current_findings, _time.monotonic() - t0,
+                mode_label="Smart",
+            )
+            if new_in_batch > findings_before:
+                findings_before = current_findings
+        elapsed_total = _time.monotonic() - t0
+        final_findings = _count_findings_on_disk(repo_path)
+        new_findings = final_findings - findings_before
+        print(
+            f"\n── Smart scan 完了: {len(batches)} バッチ │ "
+            f"{final_findings} findings │ {_format_elapsed(elapsed_total)} ──",
+            file=sys.stderr,
+        )
+        if new_findings > 0:
+            try:
+                from findings import append_scan_history
+                append_scan_history(
+                    repo_path,
+                    clusters=sum(len(b) for b in batches),
+                    findings_count=new_findings,
+                    scan_type="existing",
+                    scope="smart",
+                    depth=getattr(args, '_depth', '1hop'),
+                    lens=getattr(args, '_lens', 'default'),
+                )
+            except Exception:
+                pass
         sys.exit(1 if all_high > 0 else 0)
     else:
+        since_val = getattr(args, 'since', None) or "3months"
         if args.verbose:
-            print(f"Detecting changed files in {repo_path}...", file=sys.stderr)
-        all_changed = get_changed_files(repo_path, args.diff_target)
+            print(f"Detecting changed files in {repo_path} (since={since_val})...", file=sys.stderr)
+        from retrieval import get_recent_changed_files
+        all_changed = get_recent_changed_files(repo_path, since=since_val)
         source_files = filter_source_files(all_changed)
 
         if not source_files:
-            print("No changed source files found. Use --files or --smart to scan without changes.",
+            print(f"直近 {since_val} に変更されたソースファイルがありません。"
+                  " --files や --scope smart をお試しください。",
                   file=sys.stderr)
             sys.exit(0)
 
+        print(f"  📅 diff mode (since={since_val}): {len(source_files)} ファイル検出", file=sys.stderr)
         if args.verbose:
-            print(f"Found {len(source_files)} changed source file(s):", file=sys.stderr)
             for f in source_files:
-                print(f"  {f}", file=sys.stderr)
+                print(f"    {f}", file=sys.stderr)
 
     # Step 1.5: Resolve document files (--docs)
     if hasattr(args, "docs") and args.docs is not None:
@@ -1704,8 +2029,10 @@ def cmd_scan(args):
     # Step 3.7: Get git diff for change-aware detection
     from retrieval import get_diff_content
     diff_text = ""
-    if not args.files:
-        # Only include diff when using git-based file detection (not --files)
+    if scope == "pr":
+        from retrieval import get_pr_diff_content
+        diff_text = get_pr_diff_content(repo_path, getattr(args, 'base', None))
+    elif not args.files:
         diff_text = get_diff_content(repo_path, args.diff_target)
         if args.verbose and diff_text:
             print(f"  Diff context: {len(diff_text)} chars", file=sys.stderr)
@@ -1871,7 +2198,77 @@ def cmd_scan(args):
                       expired_count=len(result.expired),
                       output_format=args.output_format)
 
-    # Step 5.5: Autofix (generate + apply locally)
+    # Step 5.5: Persist findings to JSONL + refresh dashboard HTML
+    # (Terminal output alone does not feed delta view — findings_dashboard reads *.jsonl.)
+    recorded_findings = 0
+    if result.shown:
+        try:
+            from findings import add_finding, Finding, generate_id, generate_dashboard
+            try:
+                from git_enrichment import enrich_findings_batch
+                enrich_findings_batch(result.shown, repo_path, verbose=args.verbose)
+            except Exception:
+                pass
+            for f in result.shown:
+                loc = f.get("location", {})
+                full_title = f.get("contradiction") or f.get("title") or ""
+                fid = generate_id(
+                    repo_name,
+                    loc.get("file_a", ""),
+                    full_title[:120],
+                    file_b=loc.get("file_b", ""),
+                    pattern=f.get("pattern", ""),
+                )
+                desc = f.get("contradiction") or f.get("user_impact") or f.get("impact") or ""
+                finding = Finding(
+                    id=fid,
+                    repo=repo_name,
+                    file=loc.get("file_a", ""),
+                    type="contradiction",
+                    severity=f.get("severity", "medium"),
+                    pattern=f.get("pattern", ""),
+                    title=full_title,
+                    description=desc,
+                    status="found",
+                    found_by="scan",
+                    category=f.get("category", ""),
+                    taxonomies=f.get("taxonomies"),
+                    churn_6m=f.get("churn_6m", 0),
+                    fan_out=f.get("fan_out", 0),
+                    total_lines=f.get("total_lines", 0),
+                    contradiction=f.get("contradiction", ""),
+                    impact=f.get("impact", ""),
+                    user_impact=f.get("user_impact", ""),
+                    internal_evidence=f.get("internal_evidence", ""),
+                    file_b=loc.get("file_b", ""),
+                )
+                try:
+                    add_finding(repo_path, finding)
+                    recorded_findings += 1
+                except ValueError:
+                    pass  # duplicate
+            if recorded_findings > 0:
+                _treemap = None
+                _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
+                if _results_json.exists():
+                    try:
+                        from visualize import build_treemap_json
+                        _treemap = build_treemap_json(str(_results_json))
+                    except Exception:
+                        pass
+                _dash_tpl = getattr(args, "_dashboard_template", "")
+                generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
+                if args.verbose:
+                    print(
+                        f"  Recorded {recorded_findings} finding(s) to .delta-lint/findings/; "
+                        "dashboard.html updated.",
+                        file=sys.stderr,
+                    )
+        except Exception as e:
+            if args.verbose:
+                print(f"  Warning: could not persist findings to JSONL: {e}", file=sys.stderr)
+
+    # Step 5.6: Autofix (generate + apply locally)
     if getattr(args, 'autofix', False) and result.shown:
         from fixgen import generate_fixes, apply_fixes_locally
         print(f"\n── Autofix: generating fixes for {len(result.shown)} finding(s)...",
@@ -1916,6 +2313,8 @@ def cmd_scan(args):
         print(f"\nFull log saved to {log_path}", file=sys.stderr)
 
     # Step 6.3: Record scan history (with finding_ids for Chao1 coverage estimation)
+    # Skip for batch child processes (--files with batched scope) — parent records once.
+    is_batch_child = getattr(args, 'files', None) and scope in ("smart", "wide", "pr")
     try:
         from findings import append_scan_history, generate_id
         scan_fids = []
@@ -1930,23 +2329,36 @@ def cmd_scan(args):
             scan_fids.append(fid)
             if f.get("pattern"):
                 scan_patterns.append(f["pattern"])
-        # Resolve scan_type from 3-axis model for backward compat
-        _scan_type = "diff"
-        if scope == "smart":
-            _scan_type = "existing"
-        elif scope == "all":
-            _scan_type = "deep" if getattr(args, '_depth', '1hop') == "graph" else "existing"
-        append_scan_history(
-            repo_path,
-            clusters=len(context.target_files),
-            findings_count=len(result.shown),
-            scan_type=_scan_type,
-            finding_ids=scan_fids,
-            patterns_found=scan_patterns,
-            scope=scope,
-            depth=getattr(args, '_depth', '1hop'),
-            lens=getattr(args, '_lens', 'default'),
-        )
+        if not is_batch_child:
+            _scan_type = "diff"
+            if scope == "smart":
+                _scan_type = "existing"
+            elif scope == "wide":
+                _scan_type = "deep" if getattr(args, '_depth', '1hop') == "graph" else "existing"
+            elif scope == "pr":
+                _scan_type = "existing"
+            append_scan_history(
+                repo_path,
+                clusters=len(context.target_files),
+                findings_count=len(result.shown),
+                scan_type=_scan_type,
+                finding_ids=scan_fids,
+                patterns_found=scan_patterns,
+                scope=scope,
+                depth=getattr(args, '_depth', '1hop'),
+                lens=getattr(args, '_lens', 'default'),
+            )
+        from findings import generate_dashboard as _gen_dash
+        _treemap = None
+        _rj = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
+        if _rj.exists():
+            try:
+                from visualize import build_treemap_json
+                _treemap = build_treemap_json(str(_rj))
+            except Exception:
+                pass
+        _gen_dash(repo_path, treemap_json=_treemap,
+                  dashboard_template=getattr(args, "_dashboard_template", ""))
     except Exception:
         pass
 
@@ -2017,7 +2429,11 @@ def cmd_scan(args):
 # ---------------------------------------------------------------------------
 
 def cmd_view(args):
-    """Open unified delta-lint dashboard in the browser."""
+    """Open unified delta-lint dashboard in the browser.
+
+    Always regenerates HTML from data so that template changes, new findings,
+    and scan history updates are reflected without needing --regenerate.
+    """
     repo_path = Path(args.repo).resolve()
     delta_dir = repo_path / ".delta-lint"
 
@@ -2026,16 +2442,6 @@ def cmd_view(args):
         print("  先に delta init を実行してください。", file=sys.stderr)
         sys.exit(1)
 
-    dash_path = delta_dir / "findings" / "dashboard.html"
-    regenerate = getattr(args, "regenerate", False)
-
-    if dash_path.exists() and not regenerate:
-        import subprocess as _sp
-        _sp.Popen(["open", str(dash_path)])
-        print(f"✓ ダッシュボード: {dash_path}")
-        return
-
-    # Regenerate: build treemap JSON if results.json exists, then generate unified dashboard
     from findings import generate_dashboard
 
     treemap_json = None
@@ -2053,7 +2459,7 @@ def cmd_view(args):
     out = generate_dashboard(str(repo_path), treemap_json=treemap_json, dashboard_template=_dash_tpl)
     import subprocess as _sp
     _sp.Popen(["open", str(out)])
-    print(f"✓ ダッシュボード (再生成): {out}")
+    print(f"✓ ダッシュボード: {out}")
 
 
 # ---------------------------------------------------------------------------
@@ -2373,9 +2779,20 @@ def main():
     )
     scan_parser.add_argument(
         "--scope", default=None,
-        choices=["diff", "smart", "all"],
+        choices=["diff", "smart", "wide", "pr"],
         help="Scan scope: diff (changed files, default), smart (git history priority), "
-             "all (entire codebase). Replaces --smart flag.",
+             "wide (entire codebase, batched), pr (all files changed since base branch). "
+             "Replaces --smart flag.",
+    )
+    scan_parser.add_argument(
+        "--base", default=None,
+        help="Base branch for --scope pr (default: auto-detect origin/main or GITHUB_BASE_REF)",
+    )
+    scan_parser.add_argument(
+        "--since", default=None,
+        help="Time window for file selection, e.g. '3months', '6months', '1year', '90days'. "
+             "Works with --scope diff (default: 3months), smart, and pr. "
+             "Collects all files changed in the given period from git log.",
     )
     scan_parser.add_argument(
         "--depth", default=None,

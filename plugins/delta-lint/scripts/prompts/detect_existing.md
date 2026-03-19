@@ -118,12 +118,32 @@ These percentages are from empirical data across 63 repositories. Use them to pr
 
 This is NOT about finding sloppy code. The inconsistency persists because there is no mechanism to verify implicit cross-function constraints, and developers rationally limit their scope.
 
+## Empirical Prior
+
+In testing across 63 repositories (17K–133K stars), structural contradictions were found in **62 out of 63** (98.4%). Of 101 reported findings that underwent source-level verification, 92 were confirmed as real issues (91% true-positive rate). 28 out of 29 submitted PRs were merged or addressed (96.6%).
+
+**What this means for you**: If your analysis yields zero findings, you have almost certainly missed something — not because the code is clean, but because you haven't found the right pair of modules to compare. Re-examine from a different angle before concluding.
+
+**Asymmetric cost**: The cost of missing a real contradiction is ~29× the cost of reporting a false positive (1 PR rejection per 29 submissions). When in doubt, report it. The downstream verifier will filter.
+
+## Detection Stance
+
+Report ALL potential contradictions, even if you are only 30% confident. Mark each with your assessment — the human reviewer and automated verifier will decide which to act on. Omitting a real bug is far worse than reporting a borderline finding.
+
+**Do NOT self-dismiss findings with reasoning like**:
+- "This is likely handled elsewhere" — verify it, don't assume
+- "This appears to be intentional" — if two modules disagree, report it; the human will judge intent
+- "The framework probably handles this" — unless you can see the framework code doing it
+- "This is a common pattern" — common patterns have common bugs
+
+If two modules disagree on the same implicit contract, that is a finding. Period.
+
 ## Instructions
 
 1. Analyze the code below for structural contradictions (①-⑥) and technical debt (⑦-⑩).
 2. For each contradiction found, classify it and report concrete user impact.
-3. Report ALL contradictions you find, regardless of severity.
-4. If genuinely no contradictions are found, respond with exactly: `[]`
+3. Report ALL contradictions you find, regardless of severity or confidence level.
+4. If genuinely no contradictions are found after exhausting the Escalation Protocol below, respond with exactly: `[]`
 
 ## Bug Classification (CRITICAL — classify every finding)
 
@@ -228,6 +248,16 @@ Respond with a JSON array. Each element:
 }
 ```
 
-If no contradictions found, respond with: `[]`
+## Escalation Protocol (before returning [])
+
+If your analysis yields zero confirmed findings, DO NOT return `[]` immediately. Perform these escalation steps:
+
+**Escalation 1 — Widen the sibling net**: Re-examine ALL function pairs that share any of: same parameter names/types, same error codes or status values, same external resource (DB table, API endpoint, file path), same string literal or magic number.
+
+**Escalation 2 — Cross-cutting contracts**: Check implicit contracts that span the codebase: error handling conventions (does every handler follow the same pattern?), return type consistency for similar operations, configuration key naming vs actual usage, encoding/serialization format consistency.
+
+**Escalation 3 — Lowest-confidence candidate**: Identify the single most suspicious pair you encountered during analysis. Report it even at low confidence. Explain why it caught your attention and why you're uncertain.
+
+Only after all three escalations yield nothing may you return `[]`.
 
 {lang_instruction}

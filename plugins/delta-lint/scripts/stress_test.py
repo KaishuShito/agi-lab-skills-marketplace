@@ -1329,6 +1329,8 @@ def run_stress_test(
     parallel: int = 1,
     visualize: bool = True,
     lang: str = "en",
+    structure: dict | None = None,
+    skip_existing: bool = False,
 ) -> list[dict]:
     """Main entry point — autonomous adaptive stress-test.
 
@@ -1338,6 +1340,12 @@ def run_stress_test(
     - After initial batch, generates focused modifications targeting hotspots
     - Auto-converges when no new files are discovered
     - Retries failed scans automatically
+
+    Args:
+        structure: Pre-computed structure dict from init_lightweight/analyze_structure.
+                   If provided, skips redundant structure analysis.
+        skip_existing: If True, skip the scan_existing step (Step 0.5).
+                       Use when caller already runs scan_existing in parallel.
     """
     repo_path = str(Path(repo_path).resolve())
     if output_dir is None:
@@ -1358,8 +1366,9 @@ def run_stress_test(
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Step 0: Structure analysis
-    structure = analyze_structure(repo_path, verbose=verbose)
+    # Step 0: Structure analysis (skip if pre-computed)
+    if structure is None:
+        structure = analyze_structure(repo_path, verbose=verbose)
     structure_path = out / "structure.json"
     structure_path.write_text(
         json.dumps(structure, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -1368,31 +1377,32 @@ def run_stress_test(
         print(f"  Saved: {structure_path}", file=sys.stderr)
 
     # Step 0.5: Scan existing contradictions in hotspot clusters
-    existing_results = [
-        result for result, _, _ in scan_existing(
-            structure, repo_path,
-            backend=backend, verbose=verbose, parallel=parallel, lang=lang,
-            stream=True,
+    if not skip_existing:
+        existing_results = [
+            result for result, _, _ in scan_existing(
+                structure, repo_path,
+                backend=backend, verbose=verbose, parallel=parallel, lang=lang,
+                stream=True,
+            )
+        ]
+        existing_findings_path = out / "existing_findings.json"
+        existing_data = {
+            "metadata": {
+                "repo": repo_path,
+                "repo_name": Path(repo_path).name,
+                "timestamp": timestamp,
+                "n_clusters": len(existing_results),
+            },
+            "results": existing_results,
+        }
+        existing_findings_path.write_text(
+            json.dumps(existing_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    ]
-    existing_findings_path = out / "existing_findings.json"
-    existing_data = {
-        "metadata": {
-            "repo": repo_path,
-            "repo_name": Path(repo_path).name,
-            "timestamp": timestamp,
-            "n_clusters": len(existing_results),
-        },
-        "results": existing_results,
-    }
-    existing_findings_path.write_text(
-        json.dumps(existing_data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    if verbose:
-        n_findings = sum(len(r.get("findings", [])) for r in existing_results)
-        n_hits = sum(1 for r in existing_results if r.get("findings"))
-        print(f"  Saved: {existing_findings_path}", file=sys.stderr)
-        print(f"  {n_hits}/{len(existing_results)} clusters had existing contradictions ({n_findings} total)", file=sys.stderr)
+        if verbose:
+            n_findings = sum(len(r.get("findings", [])) for r in existing_results)
+            n_hits = sum(1 for r in existing_results if r.get("findings"))
+            print(f"  Saved: {existing_findings_path}", file=sys.stderr)
+            print(f"  {n_hits}/{len(existing_results)} clusters had existing contradictions ({n_findings} total)", file=sys.stderr)
 
     # Auto-determine n from repo size if not specified
     if n_modifications <= 0:
