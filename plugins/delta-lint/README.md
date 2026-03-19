@@ -1,4 +1,4 @@
-# delta-lint
+# DeltaLint
 
 **構造矛盾検出器** — コードモジュール間の暗黙の前提が破れている箇所を LLM で検出します。
 
@@ -20,7 +20,7 @@
 
 ### 自動インストール
 
-delta-lint は初回スキャン時に不足している依存を自動でインストールします：
+DeltaLint は初回スキャン時に不足している依存を自動でインストールします：
 
 ```
 claude CLI がない → npm install -g @anthropic-ai/claude-code を試行
@@ -435,7 +435,7 @@ python cli.py debt-loop --ids abc123,def456
 
 ## ディレクトリ構造
 
-delta-lint はリポジトリ内に `.delta-lint/` ディレクトリを作成します：
+DeltaLint はリポジトリ内に `.delta-lint/` ディレクトリを作成します：
 
 ```
 .delta-lint/
