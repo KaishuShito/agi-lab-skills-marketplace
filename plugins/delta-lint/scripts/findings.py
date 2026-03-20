@@ -26,13 +26,14 @@ INDEX_FILE = "_index.md"
 VALID_TYPES = ("bug", "contradiction", "suspicious", "enhancement")
 VALID_SEVERITIES = ("high", "medium", "low")
 VALID_STATUSES = (
-    "found",        # 発見したばかり
-    "verified",     # コード確認済み
+    "found",        # 発見したばかり（未トリアージ）
+    "suspicious",   # 高確率バグだが確証不足（内部証拠なし / 影響が曖昧 / 条件付き到達）
+    "confirmed",    # 確定バグ（OSSプロジェクトに Issue/PR を出せるレベルの確証あり）
     "submitted",    # Issue/PR 提出済み
     "merged",       # PR マージ済み
     "rejected",     # メンテナに却下された
-    "wontfix",      # 意図的な設計
-    "duplicate",    # 既知の問題
+    "wontfix",      # 意図的な設計 / デッドコード / 修正済み
+    "duplicate",    # 既知の Issue/PR あり
     "false_positive",  # 偽陽性（コード確認で否定）
 )
 
@@ -685,8 +686,18 @@ def update_status(
     finding_id: str,
     new_status: str,
     github_url: str = "",
+    certainty: str | None = None,
 ) -> None:
-    """Update a finding's status by appending a new event line."""
+    """Update a finding's status by appending a new event line.
+    
+    Args:
+        base_path: Repository base path
+        repo_name: Repository name (or empty to search all)
+        finding_id: Finding ID (e.g., "dl-67065f95")
+        new_status: New status (e.g., "confirmed", "false_positive")
+        github_url: Optional GitHub URL
+        certainty: Optional certainty level ("definite", "probable", "uncertain")
+    """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"Invalid status: {new_status}. Valid: {VALID_STATUSES}")
 
@@ -712,6 +723,15 @@ def update_status(
     entry["_updated_at"] = datetime.now().isoformat()
     if github_url:
         entry["github_url"] = github_url
+    
+    # Update taxonomies.certainty if provided
+    if certainty:
+        if "taxonomies" not in entry or entry["taxonomies"] is None:
+            entry["taxonomies"] = {}
+        elif isinstance(entry["taxonomies"], str):
+            # Handle legacy string format
+            entry["taxonomies"] = {}
+        entry["taxonomies"]["certainty"] = certainty
 
     with fpath.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -1083,7 +1103,7 @@ def _findings_verify_top(base_path: str, args) -> None:
         return
 
     # Filter to actionable statuses only
-    actionable_statuses = {"found", "verified"}
+    actionable_statuses = {"found", "confirmed"}
     candidates = [f for f in findings if f.get("status", "found") in actionable_statuses]
     if not candidates:
         print("No actionable findings (all already resolved).", file=sys.stderr)
@@ -1176,8 +1196,8 @@ def _findings_verify_top(base_path: str, args) -> None:
             obj = json.loads(line)
             fid = obj.get("id")
             if fid in confirmed_ids and obj.get("status") == "found":
-                obj["status"] = "verified"
-                obj["verified"] = True
+                obj["status"] = "confirmed"
+                obj["confirmed"] = True
                 status_updates += 1
             elif fid in rejected_ids:
                 obj["status"] = "wontfix"
@@ -1592,12 +1612,12 @@ def generate_dashboard(
     sev_counts = stats.get("by_severity", {})
     status_counts = stats.get("by_status", {})
 
-    # KPI: 検証済み = 人間が status を verified に変更したもののみ
+    # KPI: 確実バグ = status が confirmed のもの
     # 未検証 = found のまま残っている findings
     resolved_statuses = {"merged", "wontfix", "duplicate", "rejected", "false_positive"}
     confirmed_bugs = sum(
         1 for f in findings
-        if f.get("status") == "verified"
+        if f.get("status") == "confirmed"
     )
     investigating = sum(
         1 for f in findings

@@ -14,6 +14,7 @@ If `.delta-lint/` does not exist or structure.json is missing:
 ユーザーが「delta init」と明示的に言った場合も同じフローが走る。
 
 init 完了後、Step 0 に進んでスキャンを続行する。
+**init 中に記録された findings（`found_by: delta-init`）も Step 7 の調査対象に含まれる。** init 由来だからといって `found` のまま放置しない。
 
 If `.delta-lint/` already exists, skip this step entirely.
 
@@ -273,6 +274,24 @@ SUSPICIOUS は findings add するが Issue/PR は推奨しない（追加調査
 DORMANT は findings add するが `--finding-severity` を1段下げる（high→medium, medium→low）。
 DEAD/FIXED/KNOWN/BY_DESIGN は findings add しない。
 
+### トリアージラベル → findings ステータス マッピング（CRITICAL — 必ず従う）
+
+Step 7 の調査完了後、以下のマッピングに従って `findings update` でステータスを更新する。
+**`found` のまま残してはならない。** 全件を調査し、必ずいずれかのステータスに更新する。
+
+| トリアージラベル | findings ステータス | 意味 | Issue/PR |
+|-----------------|-------------------|------|----------|
+| 🔴 CONFIRMED | `confirmed` | 4a〜4d 全クリア。OSSに Issue/PR を出せるレベルの確定バグ | `debt-loop` で提案可（scan 自体は PR を出さない） |
+| 🟡 SUSPICIOUS | `suspicious` | 高確率バグだが確証不足（内部証拠なし / 影響が曖昧） | 出さない |
+| 🟡 DORMANT | `suspicious` | 到達可能だが特定条件のみで発火 | 出さない |
+| 🪦 DEAD | `wontfix` | caller ゼロ / デッドコード | — |
+| ✅ FIXED | `wontfix` | 他ブランチで修正済み | — |
+| 🔁 KNOWN | `duplicate` | 既存 Issue/PR あり | — |
+| ⚪ BY_DESIGN | `wontfix` | テスト/コメントで意図が裏付け | — |
+| （LLM の誤検出） | `false_positive` | コード精読で矛盾が存在しないと確認 | — |
+
+**scan は検出・トリアージ・ステータス更新までが責務。PR/Issue の作成は `debt-loop` の責務。** scan の中で PR を自動作成してはならない。
+
 ## Step 5.7: Persona translation（pm / qa の場合のみ）
 
 **`{persona}` が `pm` または `qa` の場合、トリアージ結果を翻訳して表示する。**
@@ -299,7 +318,96 @@ print(result)
 1. まず `findings list --repo-name {repo}` で既存の記録を確認し、重複を避ける
 2. 確認を求めず、**LIVE + DORMANT の findings のみ**を自動で `findings add` する（DEAD/FIXED/KNOWN は記録しない）
 3. DORMANT は `--finding-severity` を1段下げて記録する（high→medium, medium→low）
-4. 記録完了後、suppress の提案を行う: "suppress したい finding があれば番号を教えてください（例: `/delta-lint suppress 3`）"
+4. 記録完了後、**Step 7（自動調査）に進む**
+5. suppress の提案を行う: "suppress したい finding があれば番号を教えてください（例: `/delta-lint suppress 3`）"
+
+## Step 7: 自動調査 & ステータス更新（MANDATORY — スキャンの一部）
+
+**これは scan の必須最終ステップである。Step 6 完了後、ユーザーの指示を待たず自動的に全件を調査・判定・ステータス更新する。`found` のまま残る finding がゼロになるまで完走すること。**
+
+### なぜ自律完走が必要か
+
+- ユーザーに「ステータス更新して」と言わせるのは UX として失格
+- `found` のままの finding は「未確認の発見」であり、confirmed か false_positive かわからない中途半端な状態
+- scan の価値は「確実バグかどうかの判定」まで出して初めて成立する
+- **Step 7 を完走しない scan は未完了の scan である**
+
+### 調査手順（finding ごとに全チェックを実行）
+
+各 finding について以下を**すべて**実行する。1つでもスキップしない。
+
+1. **ソースコード精読**: finding の `file_a`, `file_b` を Read で読む（grep だけで判断しない。関数全体を読む）
+2. **矛盾の実在確認**: LLM が指摘した矛盾が実際のコードに存在するか、自分の目で確認
+3. **caller 確認**: 矛盾箇所を呼び出すコードパスが存在するか grep + Read で確認
+4. **到達可能性**: デフォルト設定で発火するか、特定条件のみか
+5. **意図確認**: テストが現在の振る舞いを expect しているか、コメントに by design 等あるか
+6. **内部証拠**: 同リポ内に正しい実装例があるか（あればバグの確度が高い）
+
+### 判定 → ステータス更新（Step 5.5 のマッピング表に従う）
+
+| 調査結果 | ステータス |
+|----------|-----------|
+| 矛盾が実在 + デフォルトで到達可能 + 内部証拠あり + 影響シナリオ明確 | `confirmed` |
+| 矛盾が実在するが、内部証拠なし / 影響が曖昧 / 条件付き到達のみ | `suspicious` |
+| caller ゼロ / デッドコード | `wontfix` |
+| 他ブランチで修正済み | `wontfix` |
+| テストが現在の振る舞いを assert / by design | `wontfix` |
+| 既存 Issue/PR あり | `duplicate` |
+| LLM の指摘自体が誤り（コードを読んで矛盾が存在しない） | `false_positive` |
+
+### ステータス更新コマンド
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python3 -c "
+from findings import update_status
+update_status('{repo_path}', '{repo_name}', '{finding_id}', '{new_status}')
+"
+```
+
+### 報告フォーマット（調査完了後、全件まとめて報告）
+
+```
+── δ-lint ── 調査完了: {total}件中 {confirmed}件確定 / {suspicious}件要注意 / {wontfix+fp}件除外
+
+dl-{id}: {title の先頭60文字}
+  → confirmed — {根拠を1行で}
+dl-{id}: {title}
+  → suspicious — {なぜ確証不足か1行で}
+dl-{id}: {title}
+  → false_positive — {なぜ誤検出か1行で}
+...
+
+🎯 confirmed の {n}件は Issue/PR 提出候補です。提出しますか？
+```
+
+### 完走チェック
+
+調査完了後、以下を確認する：
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python3 -c "
+from findings import list_findings
+ff = [f for f in list_findings('{repo_path}') if f.get('status') == 'found']
+print(f'remaining found: {len(ff)}')
+for f in ff: print(f'  {f[\"id\"]}: {f.get(\"title\",\"\")[:60]}')
+"
+```
+
+- `remaining found: 0` → 完走。ダッシュボードを再生成して終了
+- `remaining found: N` → **まだ終わっていない。残りを調査してからダッシュボードを再生成**
+
+### ダッシュボード再生成（全件完走後）
+
+```bash
+python ~/.claude/skills/delta-lint/scripts/cli.py view --regenerate --repo {repo_path}
+```
+
+### 重要ルール
+
+- **ユーザーの指示を待たない。** Step 6 → Step 7 は自動で進む
+- **`found` が 0 になるまで終わらない。** これが scan の完了条件
+- 調査中にユーザーが別の指示を出した場合は、そちらを優先してよい。ただし戻ってきたら残りを完走する
+- 1件の調査に時間がかかりすぎる場合でも `suspicious` に倒して先に進む（`found` のまま放置しない）
 
 **If expired suppressions exist**: "期限切れの suppress があります。再確認して re-suppress するか、対応を検討してください"
 

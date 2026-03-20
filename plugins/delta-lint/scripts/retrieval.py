@@ -33,10 +33,92 @@ from dataclasses import dataclass, field
 # Config
 # ---------------------------------------------------------------------------
 
-MAX_CONTEXT_CHARS = 80_000  # ~20k tokens, well within Claude's window
-MAX_FILE_CHARS = 30_000     # Skip very large files
+MAX_CONTEXT_CHARS = 40_000  # ~10k tokens — halved to reduce claude -p timeouts
+MAX_FILE_CHARS = 15_000     # Per-file cap (smart-truncated, not head-only)
 MAX_DEPS_PER_FILE = 5       # Limit dependency fan-out
 MIN_CONFIDENCE = 0.50       # Dependencies below this are excluded
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation — extract structural outline instead of head-only cut
+# ---------------------------------------------------------------------------
+
+# Regex patterns for function/method/class definitions across languages
+_OUTLINE_PATTERNS = {
+    ".py": re.compile(r"^([ \t]*(?:class |def |async def )\w+.*?):?\s*$", re.MULTILINE),
+    ".rb": re.compile(r"^([ \t]*(?:class |module |def )\w+.*?)$", re.MULTILINE),
+    ".js": re.compile(r"^([ \t]*(?:export\s+)?(?:async\s+)?(?:function\s+\w+|class\s+\w+|(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(?).*?)$", re.MULTILINE),
+    ".ts": re.compile(r"^([ \t]*(?:export\s+)?(?:async\s+)?(?:function\s+\w+|class\s+\w+|(?:const|let|var)\s+\w+\s*[:=]).*?)$", re.MULTILINE),
+    ".go": re.compile(r"^((?:func|type)\s+.*?)\s*\{?\s*$", re.MULTILINE),
+    ".java": re.compile(r"^([ \t]*(?:public|private|protected|static|final|abstract|\s)*(?:class|interface|enum|void|int|String|boolean|long|double|float|[\w<>\[\]]+)\s+\w+\s*\(.*?\).*?)$", re.MULTILINE),
+    ".rs": re.compile(r"^([ \t]*(?:pub\s+)?(?:fn|struct|enum|impl|trait|mod)\s+\w+.*?)$", re.MULTILINE),
+}
+
+
+def _smart_truncate(content: str, max_chars: int, file_path: str) -> str:
+    """Truncate large files intelligently by keeping structural outline + bodies.
+
+    Strategy:
+    1. Keep first 20 lines (imports/config)
+    2. Extract function/class definitions with their bodies (up to budget)
+    3. Skip interior of very large function bodies, keeping signature + first/last lines
+
+    Falls back to head-only truncation for unknown file types.
+    """
+    if len(content) <= max_chars:
+        return content
+
+    ext = Path(file_path).suffix.lower()
+    pattern = _OUTLINE_PATTERNS.get(ext)
+
+    if not pattern:
+        # Unknown file type — head-only
+        return content[:max_chars] + "\n... (truncated)"
+
+    lines = content.split("\n")
+
+    # Always keep first 20 lines (imports, module-level config)
+    header = "\n".join(lines[:20])
+    budget = max_chars - len(header) - 100  # reserve for markers
+
+    if budget <= 0:
+        return content[:max_chars] + "\n... (truncated)"
+
+    # Find all definition start positions
+    defs = list(pattern.finditer(content))
+    if not defs:
+        return content[:max_chars] + "\n... (truncated)"
+
+    # Extract each definition with its body
+    chunks: list[str] = []
+    used = 0
+
+    for i, m in enumerate(defs):
+        start = m.start()
+        # End = next definition start, or end of file
+        end = defs[i + 1].start() if i + 1 < len(defs) else len(content)
+        body = content[start:end].rstrip()
+
+        if len(body) <= 500:
+            # Small definition — include in full
+            chunk = body
+        else:
+            # Large definition — keep signature + first 8 lines + last 4 lines
+            body_lines = body.split("\n")
+            if len(body_lines) > 16:
+                chunk = "\n".join(body_lines[:8]) + \
+                    f"\n    # ... ({len(body_lines) - 12} lines omitted)\n" + \
+                    "\n".join(body_lines[-4:])
+            else:
+                chunk = body
+
+        if used + len(chunk) > budget:
+            chunks.append(f"# ... ({len(defs) - i} more definitions omitted)")
+            break
+        chunks.append(chunk)
+        used += len(chunk)
+
+    return header + "\n\n" + "\n\n".join(chunks)
 
 
 class DepTier(Enum):
@@ -1032,8 +1114,15 @@ def build_context(
     total_chars = 0
     seen_deps = set(changed_files)  # Skip deps that are already targets
 
-    # Step 1: Read all changed files
+    # Step 1: Read all changed files (respecting context budget)
     for fpath in changed_files:
+        if total_chars >= _max_context:
+            ctx.warnings.append(
+                f"Context limit reached ({total_chars} chars), "
+                f"skipping {len(changed_files) - len(ctx.target_files)} remaining target files"
+            )
+            break
+
         full_path = repo / fpath
         if not full_path.exists():
             ctx.warnings.append(f"File not found: {fpath}")
@@ -1046,7 +1135,7 @@ def build_context(
 
         if len(content) > _max_file:
             ctx.warnings.append(f"Truncated: {fpath} ({len(content)} chars)")
-            content = content[:_max_file] + "\n... (truncated)"
+            content = _smart_truncate(content, _max_file, fpath)
 
         ctx.target_files.append(FileContext(path=fpath, content=content, is_target=True))
         total_chars += len(content)
@@ -1071,7 +1160,7 @@ def build_context(
                 )
                 break
             if len(content) > _max_file:
-                content = content[:_max_file] + "\n... (truncated)"
+                content = _smart_truncate(content, _max_file, sib_path)
             ctx.dep_files.append(FileContext(
                 path=sib_path,
                 content=content,
@@ -1142,7 +1231,7 @@ def build_context(
                         break
 
                 if len(content) > _max_file:
-                    content = content[:_max_file] + "\n... (truncated)"
+                    content = _smart_truncate(content, _max_file, candidate)
 
                 hop_label = tier.label if hop == 0 else f"{tier.label}(hop{hop+1})"
                 fc = FileContext(
@@ -1188,7 +1277,7 @@ def build_context(
                     break
 
                 if len(content) > _max_file:
-                    content = content[:_max_file] + "\n... (truncated)"
+                    content = _smart_truncate(content, _max_file, dep_file)
 
                 ctx.dep_files.append(FileContext(
                     path=dep_file,
@@ -1222,7 +1311,7 @@ def build_context(
                 )
                 break
             if len(content) > _max_file:
-                content = content[:_max_file] + "\n... (truncated)"
+                content = _smart_truncate(content, _max_file, doc_path)
             ctx.doc_files.append(FileContext(
                 path=doc_path,
                 content=content,

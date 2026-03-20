@@ -48,10 +48,10 @@ ls {repo_path}/.delta-lint/stress-test/results.json 2>/dev/null
 **You MUST execute this Bash command right now:**
 
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize --max-wall-time 2400 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 5 --verbose --visualize --max-wall-time 300 --n 5 2>&1
 ```
 
-Use `run_in_background: true` and `timeout: 600000`.
+Use `run_in_background: true` and `timeout: 360000`.
 
 ## Step 2.1: 構造分析の結果を即表示 — CRITICAL UX STEP
 
@@ -94,10 +94,10 @@ for c in constraints[:5]:
   - {constraint2}
   - {constraint3}
 
-📡 ストレステスト実行中（10並列）
+📡 ストレステスト実行中（5並列 / 軽量モード: 5件）
   矛盾が見つかり次第、随時報告します。
   この間、通常の作業を続けて大丈夫です。
-  なにか確認したいことはありますか？
+  フルスキャンは後から `/delta-scan --lens stress` で実行できます。
 ```
 
 ## Step 2.15: 過去バグ履歴の収集 — BACKGROUND CONTEXT
@@ -337,10 +337,16 @@ for r in results:
 🟡 はエラーなく動作しているため気づきにくいですが、影響を確認してください。
 ```
 
-**findings がない場合は:**
+**findings がない場合でも「検出されませんでした」とは表示しない。** `scan_existing` は自動エスカレーション機能を内蔵しており、0件の場合は以下を自動実行する：
 
+1. ホットスポットのクラスタを統合した cross-cutting スキャン
+2. sibling_map（co-change ペア）からの追加クラスタ
+3. 高 churn ファイルからの追加クラスタ
+
+エスカレーション込みでも0件の場合のみ：
 ```
-✅ ホットスポットの直接スキャン: 既存の構造矛盾は検出されませんでした。
+✅ ホットスポット + エスカレーションスキャン: 既存の構造矛盾は検出されませんでした。
+   （2ホップ依存 + sibling_map + 高churnファイルまで探索済み）
 ```
 
 ## Step 2.5: .gitignore は自動生成 — 操作不要
@@ -350,21 +356,18 @@ for r in results:
 
 チームで地雷マップを共有したい場合は、`.delta-lint/.gitignore` を編集して必要なファイルを除外解除する。
 
-## Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY
+## Step 3: Add guard rules to CLAUDE.md — EXECUTE IMMEDIATELY (only if not exists)
 
-**Do not wait for Step 2 to complete.** While the stress-test runs in background, add the following to `{repo_path}/CLAUDE.md` (create if not exists, append if exists):
+**Do not wait for Step 2 to complete.** While the stress-test runs in background, check if `{repo_path}/CLAUDE.md` exists and contains "delta-lint guard". If not, add the following:
 
 ```markdown
 
-## delta-lint guard（必須）
-- .delta-lint/stress-test/results.json に地雷マップデータがある
-- **コード改修の前に必ず `/delta-review` を実行すること**（新機能・バグ修正・リファクタリング・性能改善等、コードを変更するタスク全般）
-  - `/delta-review` スキルが利用可能であればそれを使う
-  - 利用できない場合は、以下で影響ファイルの risk_score を確認してからコードを書く:
-    `python -c "import json; d=json.load(open('.delta-lint/stress-test/results.json')); risks={r['modification']['file']: len(r['findings']) for r in d['results'] if r['findings']}; print(risks.get('TARGET_FILE', 'not in map'))"`
-- risk_score > 0 のファイルを編集する場合、ユーザーに警告すること
-- コード改修後は `/delta-scan` の実行を提案すること
+## delta-lint guard
+- コード変更前に `/delta-review` を実行して影響範囲を確認すること
+- コード変更後は `/delta-scan` の実行を提案すること
 ```
+
+**If CLAUDE.md already exists and contains "delta-lint guard", skip this step.**
 
 ## Step 3.5: 自動進捗ポーリング — MANDATORY
 
@@ -410,12 +413,12 @@ else:
 1. 上のコマンドを実行する（即座に結果が返る）
 2. 出力を読んでユーザーに中間報告する
 3. `DONE` or `TIMEOUT` が出たら → Step 4 へ
-4. それ以外 → **5分 sleep してから再度 1 に戻る**
-5. **最大8回**（= 40分）で打ち切り。途中結果で Step 4 へ
+4. それ以外 → **1分 sleep してから再度 1 に戻る**
+5. **最大5回**（= 5分）で打ち切り。途中結果で Step 4 へ
 
 **sleep コマンド例:**
 ```bash
-sleep 300
+sleep 60
 ```
 
 ### 中間報告フォーマット

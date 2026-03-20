@@ -429,8 +429,11 @@ def _detect_cli(system_prompt: str, user_prompt: str) -> str:
     result = subprocess.run(
         ["claude", "-p"],
         input=prompt,
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=600,
     )
+    # Hook failures (e.g. SessionEnd) cause non-zero exit even when output is valid
+    if result.stdout.strip():
+        return result.stdout
     if result.returncode != 0:
         raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
     return result.stdout
@@ -439,7 +442,7 @@ def _detect_cli(system_prompt: str, user_prompt: str) -> str:
 def _detect_anthropic_sdk(system_prompt: str, user_prompt: str, model: str) -> str:
     """Call Claude via the official Anthropic SDK."""
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-    client = anthropic.Anthropic(api_key=api_key, timeout=300.0) if api_key else anthropic.Anthropic(timeout=300.0)
+    client = anthropic.Anthropic(api_key=api_key, timeout=600.0) if api_key else anthropic.Anthropic(timeout=600.0)
     message = client.messages.create(
         model=model,
         max_tokens=4096,

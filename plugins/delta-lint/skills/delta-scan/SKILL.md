@@ -37,12 +37,14 @@ Only treat it as an error if stderr contains a Python traceback or "Error:" pref
 
 **NEVER use `--files` to manually select files.** Always let cli.py handle file selection. The CLI has `--since 3months` default + `--scope smart` fallback. Manually picking files bypasses this and drastically reduces scan quality.
 
+**Scan は「記録して終わり」ではない。** findings 記録後、自動で全件の詳細調査（ソースコード精読→矛盾の実在確認→ステータス更新）まで実行する。ユーザーの指示を待たない。詳細は [workflow-scan.md Step 7](references/workflow-scan.md)。
+
 ## Workflows
 
 | Workflow | Trigger | Reference |
 |----------|---------|-----------|
 | **Init** | "delta init", "地雷マップ作って", or auto on first scan | [workflow-init.md](references/workflow-init.md) |
-| **Scan** | "delta scan", default | [workflow-scan.md](references/workflow-scan.md) |
+| **Scan** | "delta scan", default | [workflow-scan.md](references/workflow-scan.md) (scan→記録→**自動調査→ステータス更新**まで一気通貫) |
 | **PR Scan** | "PRレビュー", "PR scan", "review PR", "プルリクチェック" | [workflow-scan.md](references/workflow-scan.md) (PR mode) |
 | **Stress Test** | "ストレステスト", "stress test", "地雷マップ更新", "--lens stress", "フルスキャン" | [workflow-stress.md](references/workflow-stress.md) |
 | **Suppress Add** | "suppress {number}" | [workflow-suppress.md](references/workflow-suppress.md) |
@@ -71,6 +73,18 @@ When user provides a `dl-` prefixed ID:
 3. Read the actual source files mentioned in the finding
 4. Assess: is the contradiction still present? has it been fixed? is it by design?
 5. Report your analysis with code evidence
+6. **Update finding status** based on assessment:
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python3 -c "
+from findings import update_status
+update_status('{repo_path}', '{repo_name}', '{finding_id}', '{new_status}')
+"
+```
+   - Confirmed bug → `verified`
+   - Dead code / no callers → `wontfix`
+   - Already fixed → `wontfix`
+   - By design → `wontfix`
+   - False positive → `false_positive`
 
 ### Time window
 

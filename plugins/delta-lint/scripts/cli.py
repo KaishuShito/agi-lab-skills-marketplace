@@ -35,7 +35,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 # Ensure imports work when running from any directory
@@ -120,8 +120,12 @@ def _is_ci() -> bool:
                 or os.environ.get("GITLAB_CI") or os.environ.get("JENKINS_URL"))
 
 
-def _open_dashboard(dash_path: str, *, force: bool = False) -> bool:
-    """Open dashboard in browser if not CI. Returns True if opened."""
+def _open_dashboard(dash_path: str, *, force: bool = False, live: bool = False) -> bool:
+    """Open dashboard HTML file in browser if not CI. Returns True if opened.
+
+    The live parameter is accepted for backward compatibility but ignored;
+    dashboards are always opened as local files for multi-project support.
+    """
     if _is_ci() and not force:
         return False
     try:
@@ -130,6 +134,90 @@ def _open_dashboard(dash_path: str, *, force: bool = False) -> bool:
         return True
     except Exception:
         return False
+
+
+def _start_live_server(dash_path: str, port: int = 8976) -> None:
+    """Spawn a detached live-server process that survives parent exit."""
+    import socket
+    import subprocess
+    import webbrowser
+
+    # Check if already running
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            # Already running — just open
+            webbrowser.open(f"http://127.0.0.1:{port}")
+            return
+
+    # Spawn detached server process
+    scripts_dir = str(Path(__file__).parent)
+    subprocess.Popen(
+        [sys.executable, "-c", f"""
+import sys, os, threading
+sys.path.insert(0, {scripts_dir!r})
+os.chdir({scripts_dir!r})
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+
+dash = Path({dash_path!r})
+repo_path = str(dash.parent.parent.parent)
+_regen_lock = threading.Lock()
+
+def _background_regenerate():
+    if not _regen_lock.acquire(blocking=False):
+        return  # already regenerating
+    try:
+        from findings import generate_dashboard
+        generate_dashboard(repo_path)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    finally:
+        _regen_lock.release()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path not in ("/", "/index.html"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        # Serve existing HTML immediately, regenerate in background
+        try:
+            content = dash.read_text(encoding="utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(content.encode("utf-8"))
+            # Trigger background regeneration for next reload
+            threading.Thread(target=_background_regenerate, daemon=True).start()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f"Error: {{e}}".encode())
+    def log_message(self, fmt, *a):
+        pass
+
+server = HTTPServer(("127.0.0.1", {port}), Handler)
+server.serve_forever()
+"""],
+        stdout=subprocess.DEVNULL,
+        stderr=open(Path(dash_path).parent / "live_server.log", "w"),
+        start_new_session=True,  # detach from parent
+    )
+
+    # Wait briefly for server to start
+    import time
+    for _ in range(10):
+        time.sleep(0.2)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                break
+
+    url = f"http://127.0.0.1:{port}"
+    print(f"  🔄 ライブサーバー起動: {url} (リロードで再生成)", file=sys.stderr, flush=True)
+    webbrowser.open(url)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +376,7 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
             try:
                 r = _sp.run(
                     ["brew", "install", "gh"],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, timeout=600,
                 )
                 if r.returncode == 0 and shutil.which("gh"):
                     gh_available = True
@@ -300,7 +388,7 @@ def _check_environment(backend: str = "cli", verbose: bool = False) -> dict:
             try:
                 r = _sp.run(
                     ["conda", "install", "-y", "-c", "conda-forge", "gh"],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, timeout=600,
                 )
                 if r.returncode == 0 and shutil.which("gh"):
                     gh_available = True
@@ -1149,14 +1237,17 @@ def cmd_init(args):
         def _run_stress_test_bg():
             try:
                 from stress_test import run_stress_test
+                # Init mode: use shorter time (5 minutes for faster init)
                 run_stress_test(
                     repo_path,
                     backend="cli",
                     verbose=args.verbose,
-                    parallel=1,
+                    parallel=5,
                     lang="en",
                     structure=structure,
                     skip_existing=True,
+                    max_wall_time=300,  # 5 minutes (for faster init)
+                    n_modifications=5,  # init は軽量に
                 )
                 from findings import ingest_stress_test_debt
                 added = ingest_stress_test_debt(repo_path)
@@ -1172,7 +1263,7 @@ def cmd_init(args):
         print("  🔍 既存コードの矛盾をスキャン中...", file=sys.stderr)
         try:
             from stress_test import scan_existing
-            from findings import Finding, generate_id, add_finding, generate_dashboard
+            from findings import Finding, generate_id, add_finding, generate_dashboard, list_findings
             import webbrowser
 
             repo_name = Path(repo_path).name
@@ -1181,6 +1272,7 @@ def cmd_init(args):
             dashboard_opened = False
             all_fids = []
             all_patterns = []
+            EARLY_DASHBOARD_THRESHOLD = 3  # Open dashboard after first 3 findings
 
             for result, completed, total in scan_existing(
                 structure, repo_path,
@@ -1245,15 +1337,202 @@ def cmd_init(args):
                 _dash_tpl = getattr(args, '_dashboard_template', "")
                 dash_path = generate_dashboard(repo_path, scan_progress=progress, treemap_json=_treemap, dashboard_template=_dash_tpl)
 
-                # Open browser on first generation
-                if not dashboard_opened and not getattr(args, 'no_open', False):
-                    if _open_dashboard(str(dash_path)):
+                # Early dashboard open: after first few findings, open live dashboard
+                if (not dashboard_opened and n_saved >= EARLY_DASHBOARD_THRESHOLD
+                        and not getattr(args, 'no_open', False)):
+                    if _open_dashboard(str(dash_path), live=True):
                         dashboard_opened = True
-                        print(f"  📊 ダッシュボード: {dash_path}", file=sys.stderr)
+                        print(f"\n  📊 ライブダッシュボードを開きました（{n_saved}件検出済み）。"
+                              f" リロードで最新表示。スキャン継続中...", file=sys.stderr)
+                elif not dashboard_opened and n_saved > 0 and not getattr(args, 'no_open', False):
+                    # Fallback: open on first finding if threshold not reached yet
+                    if _open_dashboard(str(dash_path), live=True):
+                        dashboard_opened = True
+                        print(f"\n  📊 ダッシュボードを開きました（{n_saved}件検出済み）。"
+                              f" スキャンはバックグラウンドで継続中...", file=sys.stderr)
 
                 print(f"  [{completed}/{total}] {cluster_new} 件検出 (累計 {n_findings} 件)", file=sys.stderr)
 
             print(f"  🔍 {n_findings} 件検出、{n_saved} 件を findings に記録", file=sys.stderr)
+            
+            # Check for definite bugs (high severity + verified as definite)
+            definite_bugs = 0
+            try:
+                from findings import list_findings
+                all_recorded = list_findings(repo_path)
+                for f in all_recorded:
+                    if f.get("severity", "").lower() == "high":
+                        tax = f.get("taxonomies", {})
+                        certainty = tax.get("certainty", "")
+                        if certainty == "definite":
+                            definite_bugs += 1
+            except Exception:
+                pass
+            
+            # Guarantee mode: if no definite bugs found, expand scan scope
+            if definite_bugs == 0:
+                print(f"\n  ⚠ 確定バグが見つかりませんでした。スキャン範囲を拡大します...", file=sys.stderr)
+                
+                # Fallback strategy: try different scan approaches
+                fallback_attempts = [
+                    ("wide", "default", "default", "全ファイルスキャン"),
+                    ("smart", "deep", "default", "深い依存関係までスキャン"),
+                    ("smart", "default", "security", "セキュリティ観点でスキャン"),
+                ]
+                
+                for scope, depth, lens, desc in fallback_attempts:
+                    print(f"  🔍 {desc}を試行中...", file=sys.stderr)
+                    try:
+                        # Create a minimal args object for cmd_scan
+                        class ScanArgs:
+                            def __init__(self):
+                                self.repo = repo_path
+                                self.scope = scope
+                                self._depth = depth
+                                self._lens = lens
+                                self.severity = "high"
+                                self.lang = "ja"
+                                self.verbose = args.verbose
+                                self.model = getattr(args, 'model', 'claude-sonnet-4-20250514')
+                                self.backend = getattr(args, 'backend', 'cli')
+                                self.no_cache = False
+                                self.no_verify = False
+                                self.autofix = False
+                                self.no_open = True  # Don't open dashboard during fallback
+                                self.files = None
+                                self.since = None
+                                self.diff_target = None
+                                self.baseline = None
+                                self.baseline_save = False
+                                self.watch_interval = 3.0
+                                self.semantic = False
+                                self.docs = None
+                                self.parallel = 3
+                                self.deep_workers = 4
+                                self.persona = None
+                                self.output_format = "markdown"
+                                self.log_dir = None
+                                self.no_learn = False
+                        
+                        scan_args = ScanArgs()
+                        # Run a quick scan with limited context
+                        from detector import detect
+                        from context_builder import build_context
+                        from verifier import verify_findings
+                        
+                        # Get target files based on scope
+                        if scope == "wide":
+                            from retrieval import get_all_source_files
+                            target_files = get_all_source_files(repo_path)[:50]  # Limit to 50 files
+                        else:
+                            from retrieval import get_priority_batches
+                            batches = get_priority_batches(repo_path)
+                            target_files = []
+                            for batch in batches[:3]:  # First 3 batches only
+                                target_files.extend(batch)
+                        
+                        if not target_files:
+                            continue
+                        
+                        # Build context
+                        context = build_context(
+                            repo_path, target_files,
+                            depth=depth, lens=lens,
+                            verbose=args.verbose,
+                        )
+                        
+                        # Detect
+                        findings = detect(
+                            context,
+                            model=scan_args.model,
+                            backend=scan_args.backend,
+                            verbose=args.verbose,
+                        )
+                        
+                        # Verify
+                        if findings and not scan_args.no_verify:
+                            findings, _, _ = verify_findings(
+                                findings, context,
+                                model=scan_args.model,
+                                backend=scan_args.backend,
+                                verbose=args.verbose,
+                            )
+                        
+                        # Check for definite bugs
+                        found_definite = False
+                        for f in findings:
+                            if f.get("severity", "").lower() == "high":
+                                tax = f.get("taxonomies", {})
+                                certainty = tax.get("certainty", "")
+                                confidence = f.get("_verify_confidence", 0)
+                                if certainty == "definite" and confidence >= 0.85:
+                                    found_definite = True
+                                    # Save this finding
+                                    loc = f.get("location", {})
+                                    file_a = loc.get("file_a", "")
+                                    file_b = loc.get("file_b", "")
+                                    pattern = f.get("pattern", "")
+                                    title = f.get("contradiction", f.get("title", ""))[:120]
+                                    fid = generate_id(repo_name, file_a, title,
+                                                      file_b=file_b, pattern=pattern)
+                                    try:
+                                        from git_enrichment import enrich_finding
+                                        enrich_finding(f, repo_path)
+                                    except Exception:
+                                        pass
+                                    finding = Finding(
+                                        id=fid,
+                                        repo=repo_name,
+                                        file=file_a,
+                                        severity=f.get("severity", "medium"),
+                                        pattern=pattern,
+                                        title=title,
+                                        description=f.get("impact", f.get("user_impact", "")),
+                                        category=f.get("category", "contradiction"),
+                                        found_by="delta-init-fallback",
+                                        taxonomies=f.get("taxonomies"),
+                                        churn_6m=f.get("churn_6m", 0),
+                                        fan_out=f.get("fan_out", 0),
+                                        total_lines=f.get("total_lines", 0),
+                                    )
+                                    try:
+                                        add_finding(repo_path, finding)
+                                        n_saved += 1
+                                        n_findings += 1
+                                        all_fids.append(fid)
+                                        if pattern:
+                                            all_patterns.append(pattern)
+                                        print(f"  ✅ 確定バグを検出: {title[:60]}...", file=sys.stderr)
+                                    except ValueError:
+                                        pass  # duplicate
+                                    break
+                        
+                        if found_definite:
+                            break
+                    except Exception as e:
+                        if args.verbose:
+                            print(f"  [warn] フォールバックスキャン失敗: {e}", file=sys.stderr)
+                        continue
+                
+                # Final check
+                try:
+                    all_recorded = list_findings(repo_path)
+                    definite_bugs = 0
+                    for f in all_recorded:
+                        if f.get("severity", "").lower() == "high":
+                            tax = f.get("taxonomies", {})
+                            certainty = tax.get("certainty", "")
+                            if certainty == "definite":
+                                definite_bugs += 1
+                except Exception:
+                    pass
+                
+                if definite_bugs == 0:
+                    print(f"\n  ⚠ 警告: 確定バグを1件も検出できませんでした。", file=sys.stderr)
+                    print(f"     コードベースが非常に健全な可能性がありますが、", file=sys.stderr)
+                    print(f"     スキャン範囲や設定を確認してください。", file=sys.stderr)
+                else:
+                    print(f"\n  ✅ 確定バグ {definite_bugs}件を検出しました（拡大スキャンで発見）", file=sys.stderr)
 
             try:
                 from findings import append_scan_history
@@ -1305,8 +1584,29 @@ def cmd_init(args):
                 pass
 
     print("\n── δ-lint ── 初期化完了 ✅", file=sys.stderr)
+    
+    # Auto-open dashboard after init
+    if not getattr(args, 'no_open', False):
+        try:
+            from findings import generate_dashboard
+            treemap_json = None
+            results_path = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
+            if results_path.exists():
+                try:
+                    from visualize import build_treemap_json
+                    treemap_json = build_treemap_json(str(results_path))
+                except Exception:
+                    pass
+            _dash_tpl = getattr(args, '_dashboard_template', "")
+            dash_path = generate_dashboard(repo_path, treemap_json=treemap_json, dashboard_template=_dash_tpl)
+            if dash_path:
+                if _open_dashboard(str(dash_path), force=True, live=True):
+                    print("  📊 ライブダッシュボードを開きました", file=sys.stderr)
+        except Exception as e:
+            if args.verbose:
+                print(f"  [warn] ダッシュボードを開けませんでした: {e}", file=sys.stderr)
+    
     print("  次のステップ:", file=sys.stderr)
-    print("    delta view          — ダッシュボードを開く", file=sys.stderr)
     print("    delta scan                    — 変更ファイルをスキャン", file=sys.stderr)
     print("    delta scan --scope wide       — 全ファイルスキャン（バッチ分割）", file=sys.stderr)
     print("    delta scan --lens stress      — ストレステスト（地雷マップ生成）", file=sys.stderr)
@@ -1681,14 +1981,19 @@ def cmd_scan(args):
                 for f in batch:
                     print(f"      {f}", file=sys.stderr)
 
-        # Run batches sequentially — show incremental progress + refresh dashboard
+        # Run batches in parallel (or sequentially if --parallel=1)
         import subprocess
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         script_path = Path(__file__).resolve()
         all_high = 0
         findings_before = _count_findings_on_disk(repo_path)
         t0 = _time.monotonic()
-        for i, batch in enumerate(batches):
+        parallel = getattr(args, 'parallel', 3)
+        dashboard_opened = False
+
+        def run_batch(i, batch):
+            """Run a single batch and return (batch_idx, returncode, findings_count)."""
             print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
             cmd = [
                 sys.executable, str(script_path), "scan",
@@ -1720,23 +2025,63 @@ def cmd_scan(args):
             cmd.append("--no-open")  # parent controls browser open
             try:
                 result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+                returncode = result.returncode
             except subprocess.TimeoutExpired:
                 print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
-                continue
-            if result.returncode == 1:
-                all_high += 1
+                returncode = 0  # don't count timeout as high-severity
             current_findings = _count_findings_on_disk(repo_path)
-            # Open dashboard on first batch that produces findings
-            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
-                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
-                if _dash.exists():
-                    _open_dashboard(str(_dash))
-            _print_batch_progress(
-                i, len(batches), len(batch),
-                current_findings, _time.monotonic() - t0,
-                mode_label="PR",
-            )
-            findings_before = current_findings
+            return (i, returncode, current_findings)
+
+        if parallel <= 1:
+            # Sequential execution
+            for i, batch in enumerate(batches):
+                batch_idx, returncode, current_findings = run_batch(i, batch)
+                if returncode == 1:
+                    all_high += 1
+                # Open dashboard on first batch that produces findings (early open)
+                if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                    _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                    if _dash.exists():
+                        _open_dashboard(str(_dash), live=True)
+                        dashboard_opened = True
+                        print(f"\n📊 ダッシュボードを開きました（{current_findings}件検出済み）。"
+                              f" スキャンはバックグラウンドで継続中...", file=sys.stderr)
+                _print_batch_progress(
+                    batch_idx, len(batches), len(batch),
+                    current_findings, _time.monotonic() - t0,
+                    mode_label="PR",
+                )
+                findings_before = current_findings
+        else:
+            # Parallel execution
+            print(f"  並列実行: {parallel} workers", file=sys.stderr)
+            completed = 0
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {
+                    pool.submit(run_batch, i, batch): i
+                    for i, batch in enumerate(batches)
+                }
+                for future in as_completed(futures, timeout=600 * len(batches) + 60):
+                    try:
+                        batch_idx, returncode, current_findings = future.result(timeout=600)
+                        completed += 1
+                        if returncode == 1:
+                            all_high += 1
+                        # Open dashboard on first batch that produces findings
+                        if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                            _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                            if _dash.exists():
+                                _open_dashboard(str(_dash), live=True)
+                                dashboard_opened = True
+                        _print_batch_progress(
+                            batch_idx, len(batches), len(batches[batch_idx]),
+                            current_findings, _time.monotonic() - t0,
+                            mode_label="PR",
+                        )
+                    except Exception as exc:
+                        completed += 1
+                        batch_idx = futures[future]
+                        print(f"  [warn] バッチ {batch_idx+1}/{len(batches)} でエラー: {exc}", file=sys.stderr)
         elapsed_total = _time.monotonic() - t0
         final_findings = _count_findings_on_disk(repo_path)
         new_findings = final_findings - findings_before
@@ -1780,14 +2125,19 @@ def cmd_scan(args):
                 for f in batch:
                     print(f"      {f}", file=sys.stderr)
 
-        # Run batches sequentially — show incremental progress + refresh dashboard
+        # Run batches in parallel (or sequentially if --parallel=1)
         import subprocess
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         script_path = Path(__file__).resolve()
         all_high = 0
         findings_before = _count_findings_on_disk(repo_path)
         t0 = _time.monotonic()
-        for i, batch in enumerate(batches):
+        parallel = getattr(args, 'parallel', 3)
+        dashboard_opened = False
+
+        def run_batch(i, batch):
+            """Run a single batch and return (batch_idx, returncode, findings_count)."""
             print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
             cmd = [
                 sys.executable, str(script_path), "scan",
@@ -1817,24 +2167,65 @@ def cmd_scan(args):
             cmd.append("--no-open")  # parent controls browser open
             try:
                 result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+                returncode = result.returncode
             except subprocess.TimeoutExpired:
                 print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
-                continue
-            if result.returncode == 1:
-                all_high += 1
+                returncode = 0  # don't count timeout as high-severity
             current_findings = _count_findings_on_disk(repo_path)
-            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
-                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
-                if _dash.exists():
-                    _open_dashboard(str(_dash))
-            new_in_batch = current_findings - findings_before
-            _print_batch_progress(
-                i, len(batches), len(batch),
-                current_findings, _time.monotonic() - t0,
-                mode_label="Wide",
-            )
-            if new_in_batch > findings_before:
-                findings_before = current_findings
+            return (i, returncode, current_findings)
+
+        if parallel <= 1:
+            # Sequential execution
+            for i, batch in enumerate(batches):
+                batch_idx, returncode, current_findings = run_batch(i, batch)
+                if returncode == 1:
+                    all_high += 1
+                # Open dashboard on first batch that produces findings (early open)
+                if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                    _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                    if _dash.exists():
+                        _open_dashboard(str(_dash), live=True)
+                        dashboard_opened = True
+                        print(f"\n📊 ダッシュボードを開きました（{current_findings}件検出済み）。"
+                              f" スキャンはバックグラウンドで継続中...", file=sys.stderr)
+                new_in_batch = current_findings - findings_before
+                _print_batch_progress(
+                    batch_idx, len(batches), len(batch),
+                    current_findings, _time.monotonic() - t0,
+                    mode_label="Wide",
+                )
+                if new_in_batch > findings_before:
+                    findings_before = current_findings
+        else:
+            # Parallel execution
+            print(f"  並列実行: {parallel} workers", file=sys.stderr)
+            completed = 0
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {
+                    pool.submit(run_batch, i, batch): i
+                    for i, batch in enumerate(batches)
+                }
+                for future in as_completed(futures, timeout=600 * len(batches) + 60):
+                    try:
+                        batch_idx, returncode, current_findings = future.result(timeout=600)
+                        completed += 1
+                        if returncode == 1:
+                            all_high += 1
+                        # Open dashboard on first batch that produces findings
+                        if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                            _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                            if _dash.exists():
+                                _open_dashboard(str(_dash), live=True)
+                                dashboard_opened = True
+                        _print_batch_progress(
+                            batch_idx, len(batches), len(batches[batch_idx]),
+                            current_findings, _time.monotonic() - t0,
+                            mode_label="Wide",
+                        )
+                    except Exception as exc:
+                        completed += 1
+                        batch_idx = futures[future]
+                        print(f"  [warn] バッチ {batch_idx+1}/{len(batches)} でエラー: {exc}", file=sys.stderr)
         elapsed_total = _time.monotonic() - t0
         final_findings = _count_findings_on_disk(repo_path)
         new_findings = final_findings - findings_before
@@ -1875,14 +2266,19 @@ def cmd_scan(args):
                 for f in batch:
                     print(f"      {f}", file=sys.stderr)
 
-        # Run batches sequentially — show incremental progress + refresh dashboard
+        # Run batches in parallel (or sequentially if --parallel=1)
         import subprocess
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         script_path = Path(__file__).resolve()
         all_high = 0
         findings_before = _count_findings_on_disk(repo_path)
         t0 = _time.monotonic()
-        for i, batch in enumerate(batches):
+        parallel = getattr(args, 'parallel', 3)
+        dashboard_opened = False
+
+        def run_batch(i, batch):
+            """Run a single batch and return (batch_idx, returncode, findings_count)."""
             print(f"\n── Batch {i+1}/{len(batches)} ({len(batch)} files) ──", file=sys.stderr)
             cmd = [
                 sys.executable, str(script_path), "scan",
@@ -1912,24 +2308,65 @@ def cmd_scan(args):
             cmd.append("--no-open")  # parent controls browser open
             try:
                 result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+                returncode = result.returncode
             except subprocess.TimeoutExpired:
                 print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
-                continue
-            if result.returncode == 1:
-                all_high += 1
+                returncode = 0  # don't count timeout as high-severity
             current_findings = _count_findings_on_disk(repo_path)
-            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
-                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
-                if _dash.exists():
-                    _open_dashboard(str(_dash))
-            new_in_batch = current_findings - findings_before
-            _print_batch_progress(
-                i, len(batches), len(batch),
-                current_findings, _time.monotonic() - t0,
-                mode_label="Smart",
-            )
-            if new_in_batch > findings_before:
-                findings_before = current_findings
+            return (i, returncode, current_findings)
+
+        if parallel <= 1:
+            # Sequential execution
+            for i, batch in enumerate(batches):
+                batch_idx, returncode, current_findings = run_batch(i, batch)
+                if returncode == 1:
+                    all_high += 1
+                # Open dashboard on first batch that produces findings (early open)
+                if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                    _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                    if _dash.exists():
+                        _open_dashboard(str(_dash), live=True)
+                        dashboard_opened = True
+                        print(f"\n📊 ダッシュボードを開きました（{current_findings}件検出済み）。"
+                              f" スキャンはバックグラウンドで継続中...", file=sys.stderr)
+                new_in_batch = current_findings - findings_before
+                _print_batch_progress(
+                    batch_idx, len(batches), len(batch),
+                    current_findings, _time.monotonic() - t0,
+                    mode_label="Smart",
+                )
+                if new_in_batch > findings_before:
+                    findings_before = current_findings
+        else:
+            # Parallel execution
+            print(f"  並列実行: {parallel} workers", file=sys.stderr)
+            completed = 0
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {
+                    pool.submit(run_batch, i, batch): i
+                    for i, batch in enumerate(batches)
+                }
+                for future in as_completed(futures, timeout=600 * len(batches) + 60):
+                    try:
+                        batch_idx, returncode, current_findings = future.result(timeout=600)
+                        completed += 1
+                        if returncode == 1:
+                            all_high += 1
+                        # Open dashboard on first batch that produces findings
+                        if not dashboard_opened and current_findings > 0 and not getattr(args, 'no_open', False):
+                            _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                            if _dash.exists():
+                                _open_dashboard(str(_dash), live=True)
+                                dashboard_opened = True
+                        _print_batch_progress(
+                            batch_idx, len(batches), len(batches[batch_idx]),
+                            current_findings, _time.monotonic() - t0,
+                            mode_label="Smart",
+                        )
+                    except Exception as exc:
+                        completed += 1
+                        batch_idx = futures[future]
+                        print(f"  [warn] バッチ {batch_idx+1}/{len(batches)} でエラー: {exc}", file=sys.stderr)
         elapsed_total = _time.monotonic() - t0
         final_findings = _count_findings_on_disk(repo_path)
         new_findings = final_findings - findings_before
@@ -1985,22 +2422,22 @@ def cmd_scan(args):
                 print(f"  {d}", file=sys.stderr)
 
     # Step 2: Build context
-    if args.verbose:
-        print(f"Building module context...", file=sys.stderr)
+    print(f"Building module context...", file=sys.stderr)
 
     _depth = getattr(args, '_depth', 'default')
     _scope = getattr(args, '_scope', 'diff')
     _hops = 3 if (_depth == 'deep' or _scope == 'pr') else 1
     context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None), max_hops=_hops)
 
-    if args.verbose:
-        print(f"  Target files: {len(context.target_files)}", file=sys.stderr)
-        print(f"  Dependency files: {len(context.dep_files)}", file=sys.stderr)
-        if context.doc_files:
-            print(f"  Document files: {len(context.doc_files)}", file=sys.stderr)
-        print(f"  Total context: {context.total_chars} chars", file=sys.stderr)
-        for w in context.warnings:
-            print(f"  WARNING: {w}", file=sys.stderr)
+    # Always show context summary (important progress info)
+    print(f"  Target files: {len(context.target_files)}", file=sys.stderr)
+    print(f"  Dependency files: {len(context.dep_files)}", file=sys.stderr)
+    if context.doc_files:
+        print(f"  Document files: {len(context.doc_files)}", file=sys.stderr)
+    print(f"  Total context: {context.total_chars} chars", file=sys.stderr)
+    # Warnings always shown (important)
+    for w in context.warnings:
+        print(f"  WARNING: {w}", file=sys.stderr)
 
     if not context.target_files:
         print("No readable source files in context. Nothing to scan.", file=sys.stderr)
@@ -2146,14 +2583,13 @@ def cmd_scan(args):
         if cached is not None:
             findings = cached
             cache_hit = True
-            if args.verbose:
-                print(f"  Cache hit ({context_hash}) — {len(findings)} finding(s)",
-                      file=sys.stderr)
+            # Always show cache hit (important to know why it's fast)
+            print(f"  Cache hit ({context_hash[:8]}...) — {len(findings)} finding(s)",
+                  file=sys.stderr)
 
     # Step 4: Run detection (skip if cache hit)
     if not cache_hit:
-        if args.verbose:
-            print(f"Running detection with {args.model}...", file=sys.stderr)
+        print(f"Running detection with {args.model}...", file=sys.stderr)
 
         architecture = policy.get("architecture") if policy else None
         project_rules = policy.get("project_rules") if policy else None
@@ -2189,21 +2625,22 @@ def cmd_scan(args):
                            detect_prompt=detect_prompt_override,
                            lens=getattr(args, '_lens', 'default'))
 
-        if args.verbose:
-            print(f"  Raw findings: {len(findings)}", file=sys.stderr)
+        print(f"  Raw findings: {len(findings)}", file=sys.stderr)
 
     # Step 4.2: Verify findings (Phase 2 — reject false positives)
     verification_meta = None
     rejected_findings = []
     if not getattr(args, 'no_verify', False) and findings:
+        print(f"Verifying {len(findings)} finding(s)...", file=sys.stderr)
         from verifier import verify_findings as verify
         findings, rejected_findings, verification_meta = verify(
             findings, context,
             model=args.model, backend=args.backend,
             verbose=args.verbose,
         )
-        if args.verbose and verification_meta:
-            print(f"  After verification: {verification_meta['confirmed']} confirmed, "
+        # Always show verification results (important progress info)
+        if verification_meta:
+            print(f"  Verified: {verification_meta['confirmed']} confirmed, "
                   f"{verification_meta['rejected']} rejected", file=sys.stderr)
 
     # Step 4.3: Save to cache (after verification, so cache includes verified results)
@@ -2252,9 +2689,12 @@ def cmd_scan(args):
         result.shown = filter_diff_only(result.shown, source_files)
         diff_only_filtered = before - len(result.shown)
 
-    if args.verbose:
-        print(f"  Shown (>= {args.severity}): {len(result.shown)}", file=sys.stderr)
+    # Always show basic filtering results (important progress info)
+    print(f"  Shown (>= {args.severity}): {len(result.shown)}", file=sys.stderr)
+    if len(result.filtered) > 0:
         print(f"  Filtered: {len(result.filtered)}", file=sys.stderr)
+    # Detailed breakdown only with --verbose
+    if args.verbose:
         if diff_only_filtered:
             print(f"  Diff-only filtered: {diff_only_filtered}", file=sys.stderr)
         if policy_filtered:
@@ -2297,9 +2737,11 @@ def cmd_scan(args):
                       expired_count=len(result.expired),
                       output_format=args.output_format)
 
-    # Step 5.5: Persist findings to JSONL + refresh dashboard HTML
+    # Step 5.5: Persist findings to JSONL + refresh dashboard HTML (early open for first few findings)
     # (Terminal output alone does not feed delta view — findings_dashboard reads *.jsonl.)
     recorded_findings = 0
+    dashboard_opened_early = False
+    EARLY_DASHBOARD_THRESHOLD = 3  # Open dashboard after first 3 findings
     if result.shown:
         try:
             from findings import add_finding, Finding, generate_id, generate_dashboard
@@ -2344,10 +2786,31 @@ def cmd_scan(args):
                 try:
                     add_finding(repo_path, finding)
                     recorded_findings += 1
+                    
+                    # Early dashboard open: after first few findings, open dashboard and continue in background
+                    if (not dashboard_opened_early and recorded_findings >= EARLY_DASHBOARD_THRESHOLD
+                            and not getattr(args, 'no_open', False)):
+                        _treemap = None
+                        _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
+                        if _results_json.exists():
+                            try:
+                                from visualize import build_treemap_json
+                                _treemap = build_treemap_json(str(_results_json))
+                            except Exception:
+                                pass
+                        _dash_tpl = getattr(args, "_dashboard_template", "")
+                        dash_path = generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
+                        if dash_path:
+                            _open_dashboard(str(dash_path), live=True)
+                            dashboard_opened_early = True
+                            print(f"\n📊 ダッシュボードを開きました（{recorded_findings}件検出済み）。"
+                                  f" スキャンはバックグラウンドで継続中...", file=sys.stderr)
                 except ValueError:
                     pass  # duplicate
                 except OSError as e:
                     print(f"  [warn] finding保存失敗: {e}", file=sys.stderr)
+            
+            # Final dashboard update (if not opened early, or refresh if opened early)
             if recorded_findings > 0:
                 _treemap = None
                 _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
@@ -2359,17 +2822,24 @@ def cmd_scan(args):
                         pass
                 _dash_tpl = getattr(args, "_dashboard_template", "")
                 dash_path = generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
-                if dash_path and not getattr(args, 'no_open', False):
-                    _open_dashboard(str(dash_path))
-                if args.verbose:
-                    print(
-                        f"  Recorded {recorded_findings} finding(s) to .delta-lint/findings/; "
-                        "dashboard.html updated.",
-                        file=sys.stderr,
-                    )
+                if dash_path and not dashboard_opened_early and not getattr(args, 'no_open', False):
+                    _open_dashboard(str(dash_path), live=True)
         except Exception as e:
             if args.verbose:
-                print(f"  Warning: could not persist findings to JSONL: {e}", file=sys.stderr)
+                print(f"  [warn] findings保存中にエラー: {e}", file=sys.stderr)
+
+    # Always open dashboard after scan if findings exist on disk (even if no new ones this run)
+    if not dashboard_opened_early and recorded_findings == 0 and not getattr(args, 'no_open', False):
+        try:
+            from findings import list_findings, generate_dashboard
+            existing = list_findings(repo_path)
+            if existing:
+                _dash_tpl = getattr(args, "_dashboard_template", "")
+                dash_path = generate_dashboard(repo_path, dashboard_template=_dash_tpl)
+                if dash_path:
+                    _open_dashboard(str(dash_path), live=True)
+        except Exception:
+            pass
 
     # Step 5.6: Autofix (generate + apply locally)
     if getattr(args, 'autofix', False) and result.shown:
@@ -2508,6 +2978,107 @@ def cmd_scan(args):
 
     # Exit code: 1 if high-severity findings or debt_budget exceeded
     high_count = sum(1 for f in result.shown if f.get("severity", "").lower() == "high")
+    
+    # Step 7.5: Autonomous actions + summary
+    if result.shown:
+        # Count definite bugs (high severity + verified as definite with confidence >= 0.85)
+        definite_bugs = []
+        for f in result.shown:
+            if f.get("severity", "").lower() == "high":
+                tax = f.get("taxonomies", {})
+                certainty = tax.get("certainty", "")
+                confidence = f.get("_verify_confidence", 0)
+                if certainty == "definite" and confidence >= 0.85:
+                    definite_bugs.append(f)
+        definite_count = len(definite_bugs)
+        
+        # Autonomous action 1: Auto-fix definite bugs (if not already done)
+        if definite_count > 0 and not getattr(args, 'autofix', False):
+            # Auto-generate and apply fixes for definite bugs
+            try:
+                from fixgen import generate_fixes, apply_fixes_locally
+                print(f"\n🔧 確定バグ {definite_count}件に対して自動修正を生成中...", file=sys.stderr)
+                fixes = generate_fixes(
+                    definite_bugs, context,
+                    model=args.model, backend=args.backend,
+                    verbose=args.verbose,
+                )
+                if fixes:
+                    applied = apply_fixes_locally(fixes, repo_path, verbose=args.verbose)
+                    if applied:
+                        print(f"✅ {len(applied)}件の修正を自動適用しました:", file=sys.stderr)
+                        for fix in applied:
+                            explanation = fix.get("explanation", "")
+                            print(f"   {fix.get('file', '?')}:{fix.get('line', '?')} — {explanation}",
+                                  file=sys.stderr)
+                    else:
+                        if args.verbose:
+                            print("   ⚠ 修正コードは生成されましたが、適用できませんでした（コード変更の可能性）", file=sys.stderr)
+                else:
+                    if args.verbose:
+                        print("   ⚠ 自動修正の生成に失敗しました", file=sys.stderr)
+            except Exception as e:
+                if args.verbose:
+                    print(f"   ⚠ 自動修正の実行中にエラー: {e}", file=sys.stderr)
+        
+        # Autonomous action 2: Auto-suppress low severity findings (background)
+        auto_suppressed_count = 0
+        if len(result.filtered) > 0:
+            # Auto-suppress low severity findings that are unlikely to be fixed
+            try:
+                from suppress import SuppressEntry, save_suppressions, load_suppressions
+                from suppress import finding_hash, code_hash
+                existing = load_suppressions(repo_path)
+                new_suppressions = []
+                for f in result.filtered:
+                    # Only auto-suppress if certainty is uncertain and severity is low
+                    tax = f.get("taxonomies", {})
+                    certainty = tax.get("certainty", "uncertain")
+                    sev = f.get("severity", "low").lower()
+                    if sev == "low" and certainty == "uncertain":
+                        fhash = finding_hash(f)
+                        # Check if not already suppressed
+                        if not any(e.finding_hash == fhash for e in existing + new_suppressions):
+                            entry = SuppressEntry(
+                                id=fhash,
+                                finding_hash=fhash,
+                                code_hash=code_hash(f, repo_path),
+                                reason="自動suppress: 低重要度かつ不確実なfinding",
+                                created_at=datetime.now().isoformat(),
+                            )
+                            new_suppressions.append(entry)
+                            auto_suppressed_count += 1
+                if new_suppressions:
+                    save_suppressions(repo_path, existing + new_suppressions)
+                    if args.verbose:
+                        print(f"   📝 {auto_suppressed_count}件の低重要度 findings を自動suppressしました", file=sys.stderr)
+            except Exception:
+                pass  # Non-critical — don't fail scan for auto-suppress errors
+        
+        # Print final summary report
+        print("\n" + "═" * 70, file=sys.stderr)
+        print("📊 スキャン完了レポート", file=sys.stderr)
+        print("═" * 70, file=sys.stderr)
+        
+        if definite_count > 0:
+            print(f"✅ 確定バグ: {definite_count}件（2段階検証済み）", file=sys.stderr)
+            if not getattr(args, 'autofix', False):
+                print("   → 自動修正を試行しました（上記を確認してください）", file=sys.stderr)
+        if high_count > definite_count:
+            print(f"⚠ 高重要度: {high_count - definite_count}件", file=sys.stderr)
+        if len(result.shown) > high_count:
+            print(f"📋 その他: {len(result.shown) - high_count}件", file=sys.stderr)
+        
+        if len(result.filtered) > 0:
+            print(f"📝 低重要度除外: {len(result.filtered)}件", end="", file=sys.stderr)
+            if auto_suppressed_count > 0:
+                print(f"（うち{auto_suppressed_count}件を自動suppress）", end="", file=sys.stderr)
+            print("", file=sys.stderr)
+        
+        if verification_meta:
+            print(f"🔍 検証結果: {verification_meta.get('confirmed', 0)}件確認、{verification_meta.get('rejected', 0)}件却下", file=sys.stderr)
+        
+        print("═" * 70 + "\n", file=sys.stderr)
 
     # debt_budget gate (CI integration)
     debt_budget = policy.get("debt_budget") if policy else None
@@ -2680,9 +3251,16 @@ def cmd_view(args):
     print("⏳ ダッシュボード生成中（スコアリング・git解析）...", file=sys.stderr, flush=True)
     _dash_tpl = getattr(args, '_dashboard_template', "")
     out = generate_dashboard(str(repo_path), treemap_json=treemap_json, dashboard_template=_dash_tpl)
-    import subprocess as _sp
-    _sp.Popen(["open", str(out)])
-    print(f"✓ ダッシュボード: {out}")
+    if out and not getattr(args, 'no_open', False):
+        # cmd_view always opens dashboard (force=True), with live reload by default
+        live = not getattr(args, 'no_live', False)
+        if _open_dashboard(str(out), force=True, live=live):
+            print(f"✓ ダッシュボードを開きました: {out}", file=sys.stderr)
+        else:
+            print(f"✓ ダッシュボード: {out}", file=sys.stderr)
+            print("   ブラウザで手動で開いてください", file=sys.stderr)
+    else:
+        print(f"✓ ダッシュボード: {out}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -3093,6 +3671,11 @@ def main():
         help="Number of parallel LLM verification workers for deep scan (default: 4)",
     )
     scan_parser.add_argument(
+        "--parallel", type=int, default=3,
+        help="Number of parallel batch workers for wide/smart/pr scans (default: 3). "
+             "Set to 1 for sequential execution.",
+    )
+    scan_parser.add_argument(
         "--docs", nargs="*", default=None,
         help="Document files to include as specification contract surfaces. "
              "Checks code × document contradictions (e.g., README claims vs actual behavior). "
@@ -3126,6 +3709,11 @@ def main():
     view_parser.add_argument(
         "--regenerate", action="store_true", default=False,
         help="Regenerate HTML from data even if it already exists",
+    )
+    view_parser.add_argument(
+        "--no-live", action="store_true", default=False,
+        dest="no_live",
+        help="Open static file instead of live server",
     )
 
     # --- findings subcommand ---

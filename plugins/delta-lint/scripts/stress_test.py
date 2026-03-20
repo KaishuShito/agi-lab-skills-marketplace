@@ -806,47 +806,62 @@ def _scan_cluster(
     return {"cluster": cluster, "findings": [], "error": str(last_error)}
 
 
-def scan_existing(
+def _build_clusters(
     structure: dict,
     repo_path: str,
-    backend: str = "cli",
     verbose: bool = False,
-    parallel: int = 1,
-    lang: str = "en",
-    stream: bool = False,
-):
-    """Scan hotspot file clusters for existing contradictions.
+    depth: int = 2,
+) -> list[dict]:
+    """Build file clusters from hotspots with deep dependency traversal.
 
-    Uses structure.json hotspots + module dependencies to build clusters,
-    then runs detect() on each cluster WITHOUT virtual modifications.
-    This finds bugs that exist RIGHT NOW in the codebase.
-
-    If stream=True, yields (result, completed_count, total_count) tuples
-    as each cluster completes (completion order, not index order).
-    If stream=False (default), returns list[dict] for backward compatibility.
+    Args:
+        depth: How many hops to follow dependencies (1=direct only, 2=2-hop).
     """
-    if verbose:
-        print("[step 0.5] Scanning for existing contradictions...", file=sys.stderr)
-
     hotspots = structure.get("hotspots", [])
     modules = structure.get("modules", [])
 
     if not hotspots:
-        if verbose:
-            print("  No hotspots found, skipping existing scan", file=sys.stderr)
-        if stream:
-            return
         return []
 
-    # Build dependency lookup from structure.json modules
+    # Build dependency lookup (forward + reverse)
     dep_map: dict[str, list[str]] = {}
+    rev_dep_map: dict[str, list[str]] = {}
     for mod in modules:
         path = mod.get("path", "")
         deps = mod.get("dependencies", [])
         if path:
             dep_map[path] = deps
+            for dep in deps:
+                rev_dep_map.setdefault(dep, []).append(path)
 
-    # Build clusters: each hotspot + its dependencies
+    # Load sibling_map for co-change pairs
+    sibling_pairs: dict[str, list[str]] = {}
+    try:
+        from sibling import load_sibling_map
+        for entry in load_sibling_map(repo_path):
+            sibling_pairs.setdefault(entry.file_a, []).append(entry.file_b)
+            sibling_pairs.setdefault(entry.file_b, []).append(entry.file_a)
+        if verbose and sibling_pairs:
+            print(f"  Loaded sibling_map: {len(sibling_pairs)} files with siblings", file=sys.stderr)
+    except Exception:
+        pass
+
+    def _expand(seed: str, max_depth: int) -> list[str]:
+        """BFS expansion: forward deps + reverse deps + siblings up to max_depth hops."""
+        visited = {seed}
+        frontier = [seed]
+        for _ in range(max_depth):
+            next_frontier = []
+            for f in frontier:
+                for neighbor in dep_map.get(f, []) + rev_dep_map.get(f, []) + sibling_pairs.get(f, []):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.append(neighbor)
+            frontier = next_frontier
+            if not frontier:
+                break
+        return list(visited)
+
     clusters: list[dict] = []
     seen_centers: set[str] = set()
 
@@ -856,18 +871,7 @@ def scan_existing(
             continue
         seen_centers.add(center)
 
-        files = [center]
-        # Add dependencies from structure.json
-        for dep in dep_map.get(center, []):
-            if dep not in files:
-                files.append(dep)
-
-        # Also add modules that depend ON this hotspot (reverse deps)
-        for mod in modules:
-            if center in mod.get("dependencies", []):
-                mod_path = mod.get("path", "")
-                if mod_path and mod_path not in files:
-                    files.append(mod_path)
+        files = _expand(center, depth)
 
         clusters.append({
             "center": center,
@@ -876,12 +880,106 @@ def scan_existing(
         })
 
     if verbose:
-        print(f"  {len(clusters)} hotspot clusters to scan", file=sys.stderr)
+        avg_size = sum(len(c["files"]) for c in clusters) / max(len(clusters), 1)
+        print(f"  {len(clusters)} clusters (avg {avg_size:.1f} files/cluster, depth={depth})", file=sys.stderr)
 
+    return clusters
+
+
+def _escalate_clusters(
+    structure: dict,
+    repo_path: str,
+    existing_clusters: list[dict],
+    verbose: bool = False,
+) -> list[dict]:
+    """Generate additional clusters for escalation when initial scan finds 0 findings.
+
+    Strategy:
+    1. Merge small clusters into larger cross-cutting ones
+    2. Add clusters from sibling_map pairs not already covered
+    3. Add clusters from high-churn files not in hotspots
+    """
+    modules = structure.get("modules", [])
+    covered_files = {f for c in existing_clusters for f in c["files"]}
+    new_clusters: list[dict] = []
+
+    # Strategy 1: Merge adjacent clusters to create cross-cutting views
+    if len(existing_clusters) >= 2:
+        merged_files: list[str] = []
+        for c in existing_clusters:
+            for f in c["files"]:
+                if f not in merged_files:
+                    merged_files.append(f)
+        # Cap at 15 files to keep context manageable
+        if len(merged_files) > 1:
+            new_clusters.append({
+                "center": "(cross-cutting)",
+                "reason": "escalation: merged hotspot clusters for wider view",
+                "files": merged_files[:15],
+            })
+
+    # Strategy 2: Sibling pairs not yet covered
+    try:
+        from sibling import load_sibling_map
+        for entry in load_sibling_map(repo_path):
+            if entry.file_a not in covered_files or entry.file_b not in covered_files:
+                new_clusters.append({
+                    "center": entry.file_a,
+                    "reason": f"escalation: sibling pair ({entry.contract})",
+                    "files": [entry.file_a, entry.file_b],
+                })
+                covered_files.update([entry.file_a, entry.file_b])
+                if len(new_clusters) >= 5:
+                    break
+    except Exception:
+        pass
+
+    # Strategy 3: High-churn files not in hotspots
+    try:
+        from sibling import get_git_churn
+        churn = get_git_churn(repo_path, months=6)
+        for item in churn[:10]:
+            path = item.get("path", "")
+            if path and path not in covered_files:
+                # Build a small cluster around this churn-heavy file
+                dep_map: dict[str, list[str]] = {}
+                for mod in modules:
+                    p = mod.get("path", "")
+                    if p:
+                        dep_map[p] = mod.get("dependencies", [])
+                files = [path] + [d for d in dep_map.get(path, []) if d not in covered_files][:4]
+                new_clusters.append({
+                    "center": path,
+                    "reason": f"escalation: high churn ({item.get('changes', '?')} changes in 6m)",
+                    "files": files,
+                })
+                covered_files.update(files)
+                if len(new_clusters) >= 8:
+                    break
+    except Exception:
+        pass
+
+    if verbose:
+        print(f"  [escalation] Generated {len(new_clusters)} additional clusters", file=sys.stderr)
+
+    return new_clusters
+
+
+def _run_clusters(
+    clusters: list[dict],
+    repo_path: str,
+    backend: str,
+    verbose: bool,
+    parallel: int,
+    lang: str,
+    stream: bool,
+    label: str = "step 0.5",
+):
+    """Run scan on clusters. Yields or returns results depending on stream flag."""
     total = len(clusters)
+    CLUSTER_TIMEOUT = 600
 
     if not stream:
-        # Original batch mode (backward compatible)
         if parallel <= 1:
             return [
                 _scan_cluster(c, i, total, repo_path, backend, verbose, lang=lang)
@@ -891,9 +989,7 @@ def scan_existing(
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         if verbose:
-            print(f"[step 0.5] Running {total} cluster scans with {parallel} workers", file=sys.stderr)
-
-        CLUSTER_TIMEOUT = 360
+            print(f"[{label}] Running {total} cluster scans with {parallel} workers", file=sys.stderr)
 
         results = [None] * total
         with ThreadPoolExecutor(max_workers=parallel) as pool:
@@ -912,13 +1008,11 @@ def scan_existing(
 
         return [r if r is not None else {"findings": [], "error": "incomplete"} for r in results]
 
-    # Streaming mode: yield results as each cluster completes
+    # Streaming mode
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    CLUSTER_TIMEOUT = 360
-
     if verbose:
-        print(f"[step 0.5] Streaming {total} cluster scans with {parallel} workers", file=sys.stderr)
+        print(f"[{label}] Streaming {total} cluster scans with {parallel} workers", file=sys.stderr)
 
     completed = 0
     if parallel <= 1:
@@ -940,6 +1034,84 @@ def scan_existing(
                     if verbose:
                         print(f"[error] cluster scan: {exc}", file=sys.stderr)
                 completed += 1
+                yield result, completed, total
+
+
+def scan_existing(
+    structure: dict,
+    repo_path: str,
+    backend: str = "cli",
+    verbose: bool = False,
+    parallel: int = 1,
+    lang: str = "en",
+    stream: bool = False,
+):
+    """Scan hotspot file clusters for existing contradictions.
+
+    Uses deep cluster building (2-hop deps + sibling_map + reverse deps)
+    then runs detect() on each cluster WITHOUT virtual modifications.
+    This finds bugs that exist RIGHT NOW in the codebase.
+
+    If initial scan finds 0 findings, automatically escalates with
+    expanded clusters (merged cross-cutting, sibling pairs, high-churn files).
+
+    If stream=True, yields (result, completed_count, total_count) tuples
+    as each cluster completes (completion order, not index order).
+    If stream=False (default), returns list[dict] for backward compatibility.
+    """
+    if verbose:
+        print("[step 0.5] Scanning for existing contradictions...", file=sys.stderr)
+
+    # Phase 1: Build deep clusters (2-hop deps + siblings + reverse deps)
+    clusters = _build_clusters(structure, repo_path, verbose=verbose, depth=2)
+
+    if not clusters:
+        if verbose:
+            print("  No hotspots found, skipping existing scan", file=sys.stderr)
+        if stream:
+            return
+        return []
+
+    if not stream:
+        # Batch mode with auto-escalation
+        results = _run_clusters(clusters, repo_path, backend, verbose, parallel, lang,
+                                stream=False, label="step 0.5")
+
+        # Auto-escalation: if 0 findings, expand and retry
+        total_findings = sum(len(r.get("findings", [])) for r in results)
+        if total_findings == 0:
+            if verbose:
+                print("[step 0.5] 0 findings — escalating with expanded clusters...", file=sys.stderr)
+            esc_clusters = _escalate_clusters(structure, repo_path, clusters, verbose=verbose)
+            if esc_clusters:
+                esc_results = _run_clusters(esc_clusters, repo_path, backend, verbose, parallel, lang,
+                                            stream=False, label="escalation")
+                results.extend(esc_results)
+
+        return results
+
+    # Streaming mode with auto-escalation
+    all_results: list[dict] = []
+    total_findings = 0
+
+    for result, completed, total in _run_clusters(
+        clusters, repo_path, backend, verbose, parallel, lang,
+        stream=True, label="step 0.5",
+    ):
+        all_results.append(result)
+        total_findings += len(result.get("findings", []))
+        yield result, completed, total
+
+    # Auto-escalation: if 0 findings, expand and retry
+    if total_findings == 0:
+        if verbose:
+            print("[step 0.5] 0 findings — escalating with expanded clusters...", file=sys.stderr)
+        esc_clusters = _escalate_clusters(structure, repo_path, clusters, verbose=verbose)
+        if esc_clusters:
+            for result, completed, total in _run_clusters(
+                esc_clusters, repo_path, backend, verbose, parallel, lang,
+                stream=True, label="escalation",
+            ):
                 yield result, completed, total
 
 
@@ -1118,7 +1290,7 @@ def run_scans(
     if verbose:
         print(f"[step 2] Running {total} scans with {parallel} workers", file=sys.stderr)
 
-    PER_SCAN_TIMEOUT = 360
+    PER_SCAN_TIMEOUT = 600  # 10 minutes (increased to match claude -p timeout)
 
     results = [None] * total
     with ThreadPoolExecutor(max_workers=parallel) as pool:
@@ -1150,14 +1322,17 @@ def run_scans(
 
 def _call_claude(prompt: str) -> str:
     """Call claude -p (subscription CLI, $0 cost)."""
-    result = subprocess.run(
-        ["claude", "-p"],
-        input=prompt,
-        capture_output=True, text=True, timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
-    return result.stdout
+    try:
+        result = subprocess.run(
+            ["claude", "-p"],
+            input=prompt,
+            capture_output=True, text=True, timeout=900,  # 15 minutes (increased from 10)
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("claude -p timed out after 15 minutes")
 
 
 def _parse_json_response(raw: str) -> dict | list:

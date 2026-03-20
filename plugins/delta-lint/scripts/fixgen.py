@@ -139,7 +139,7 @@ def _generate_fix_cli(prompt: str) -> str:
     result = subprocess.run(
         ["claude", "-p"],
         input=prompt,
-        capture_output=True, text=True, timeout=300,
+        capture_output=True, text=True, timeout=600,
     )
     if result.returncode != 0:
         raise RuntimeError(f"claude -p failed: {result.stderr[:300]}")
@@ -152,7 +152,7 @@ def _generate_fix_api(prompt: str, model: str) -> str:
         raise RuntimeError("anthropic package not installed. Run: pip install anthropic")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-    client = anthropic.Anthropic(api_key=api_key, timeout=300.0) if api_key else anthropic.Anthropic(timeout=300.0)
+    client = anthropic.Anthropic(api_key=api_key, timeout=600.0) if api_key else anthropic.Anthropic(timeout=600.0)
 
     message = client.messages.create(
         model=model,

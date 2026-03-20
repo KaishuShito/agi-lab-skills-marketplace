@@ -55,7 +55,8 @@ DEFAULT_PATTERN_WEIGHT: dict[str, float] = {
 
 DEFAULT_STATUS_MULTIPLIER: dict[str, float] = {
     "found": 1.0,
-    "verified": 1.0,
+    "confirmed": 1.0,
+    "suspicious": 0.9,
     "submitted": 0.8,
     "merged": 0.0,
     "rejected": 0.5,

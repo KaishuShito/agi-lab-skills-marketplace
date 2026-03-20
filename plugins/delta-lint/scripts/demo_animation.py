@@ -138,7 +138,7 @@ def run():
     sleep(0.3)
 
     # == Scanning progress ==
-    write(f"  🔨 {WHITE}{BOLD}ストレステスト実行中（10並列）{RESET}\n")
+    write(f"  🔨 {WHITE}{BOLD}ストレステスト実行中（5並列 / 軽量モード）{RESET}\n")
     write(f"    {DIM}矛盾が見つかり次第、随時報告します。{RESET}\n\n")
     sleep(0.4)
 
