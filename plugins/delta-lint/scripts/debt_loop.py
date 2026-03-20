@@ -131,6 +131,47 @@ def _branch_exists(repo_path: str, branch: str) -> bool:
     return bool(r.stdout.strip())
 
 
+def _regression_check(repo_path: str, verbose: bool = False) -> dict:
+    """Run delta-scan --scope pr to check for regressions before commit.
+
+    Returns:
+        {"blocked": bool, "high_count": int, "warnings": list[str]}
+    """
+    scripts_dir = str(Path(__file__).parent)
+    try:
+        result = subprocess.run(
+            [sys.executable, "cli.py", "scan",
+             "--repo", repo_path, "--scope", "pr",
+             "--severity", "high", "--json"],
+            cwd=scripts_dir, capture_output=True, text=True, timeout=180,
+        )
+        # Parse output for high findings
+        high_count = 0
+        warnings = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                sev = data.get("severity", "low")
+                if sev == "high":
+                    high_count += 1
+                elif sev in ("medium", "low"):
+                    warnings.append(data.get("title", ""))
+            except json.JSONDecodeError:
+                continue
+        return {"blocked": high_count > 0, "high_count": high_count, "warnings": warnings}
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print("  Regression check timed out (180s) — proceeding", file=sys.stderr)
+        return {"blocked": False, "high_count": 0, "warnings": []}
+    except Exception as e:
+        if verbose:
+            print(f"  Regression check failed: {e} — proceeding", file=sys.stderr)
+        return {"blocked": False, "high_count": 0, "warnings": []}
+
+
 def process_one_finding(
     finding: dict,
     repo_path: str,
@@ -206,6 +247,26 @@ def process_one_finding(
             _run_git(["checkout", base_branch], repo_path)
             _run_git(["branch", "-D", branch], repo_path, check=False)
             return {"finding_id": fid, "status": "dry_run", "fixes": len(applied)}
+
+        # Regression check before commit
+        if verbose:
+            print(f"  Running regression check...", file=sys.stderr)
+        regress = _regression_check(repo_path, verbose=verbose)
+        if regress["blocked"]:
+            if verbose:
+                print(f"  BLOCKED: regression check found {regress['high_count']} high finding(s)",
+                      file=sys.stderr)
+            _run_git(["checkout", ".", "--"], repo_path, check=False)
+            _run_git(["checkout", base_branch], repo_path)
+            _run_git(["branch", "-D", branch], repo_path, check=False)
+            return {
+                "finding_id": fid, "status": "regression_blocked",
+                "high_count": regress["high_count"],
+            }
+        if regress.get("warnings"):
+            if verbose:
+                print(f"  WARNING: {len(regress['warnings'])} medium/low finding(s) — will note in PR",
+                      file=sys.stderr)
 
         # Stage changed files
         changed_files = [f["file"] for f in applied]
@@ -289,7 +350,7 @@ def run_debt_loop(
     model: str = "claude-sonnet-4-20250514",
     backend: str = "cli",
     base_branch: str | None = None,
-    status_filter: str = "found,verified",
+    status_filter: str = "found,confirmed",
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[dict]:
@@ -416,8 +477,8 @@ def main():
                         help="LLM backend: cli ($0) or api (pay-per-use)")
     parser.add_argument("--base-branch", default=None,
                         help="Base branch for fix branches (default: current branch)")
-    parser.add_argument("--status", default="found,verified",
-                        help="Comma-separated statuses to include (default: found,verified)")
+    parser.add_argument("--status", default="found,confirmed",
+                        help="Comma-separated statuses to include (default: found,confirmed)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Generate fixes but don't commit/push/PR")
     parser.add_argument("--verbose", "-v", action="store_true",
