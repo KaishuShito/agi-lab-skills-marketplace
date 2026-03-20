@@ -40,6 +40,8 @@ Only treat it as an error if stderr contains a Python traceback or "Error:" pref
 
 **Scan は「記録して終わり」ではない。** findings 記録後、自動で全件の詳細調査（ソースコード精読→矛盾の実在確認→ステータス更新）まで実行する。ユーザーの指示を待たない。詳細は [workflow-scan.md Step 7](references/workflow-scan.md)。
 
+**Issue/PR の送信先は常に `origin`（自分のリポ）。** フォークしたプロジェクトでも、デフォルトではフォーク元（upstream）ではなく自分のリポに送る。フォーク元に送りたい場合はユーザーが明示的に指示する。確認プロンプトは不要。
+
 ## Workflows
 
 | Workflow | Trigger | Reference |

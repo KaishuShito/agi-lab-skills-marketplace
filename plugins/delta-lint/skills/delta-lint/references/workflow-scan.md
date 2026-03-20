@@ -401,7 +401,7 @@ update_status('{repo_path}', '{repo_name}', '{finding_id}', '{new_status}')
 除外: {false_positive}件 false_positive / {wontfix}件 wontfix
   （詳細は findings dashboard を参照）
 
-🎯 確定バグ {confirmed}件は Issue/PR 提出候補です。提出しますか？
+🎯 確定バグ {confirmed}件は Issue/PR 提出候補です（送信先: origin）。提出しますか？
 ```
 
 **フォーマットルール:**

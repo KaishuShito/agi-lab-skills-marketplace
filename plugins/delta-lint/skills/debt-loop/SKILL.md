@@ -36,6 +36,8 @@ a local diff. **Commits, push, PR は一切行わない。**
 
 > **PR/コミット作成時の注意**: Co-Authored-By 行や「Generated with Claude Code」等のブランディングを入れないこと（グローバルポリシー）。
 
+> **Issue/PR の送信先**: 常に `origin`（自分のリポ）に送る。フォークしたプロジェクトでも、デフォルトではフォーク元（upstream）には送らない。フォーク元に送りたい場合はユーザーが明示的に指示する。
+
 ## Prerequisites
 
 - Python 3.11+, git
