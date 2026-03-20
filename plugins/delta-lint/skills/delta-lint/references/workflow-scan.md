@@ -242,30 +242,35 @@ cd {repo_path} && grep -rn "{関数名\|変数名\|値}" --include="*test*" --in
 
 ### Triage 結果の表示
 
-全 finding のトリアージ完了後、以下のフォーマットでユーザーに報告:
+全 finding のトリアージ完了後、以下のフォーマットでユーザーに報告する。
+**確定バグを最上部に、除外は折りたたむ。** フラットなリストにしない。
 
 ```
-── δ-lint ── スキャン結果
+── δ-lint ── スキャン結果: {total}件中 {confirmed}件確定 / {suspicious}件要注意 / {excluded}件除外
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔴 確定バグ — {confirmed}件
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   #1 [🔴 CONFIRMED] ④ Guard Non-Propagation — handler.ts vs validator.ts
      caller: 3箇所, デフォルト設定で再現可能
      内部証拠: create_handler.ts:45 に同じガードあり
      → 放置すると: バリデーション済みと見なされた未検証データがDBに書き込まれる
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🟡 要注意 — {suspicious}件
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
   #2 [🟡 SUSPICIOUS] ① Asymmetric Defaults — encoder.ts vs decoder.ts
      caller: 5箇所, 到達可能だが内部証拠なし
      → テストが現在の振る舞いを期待している可能性あり。Issue/PR は慎重に。
   #3 [🟡 DORMANT] ② Semantic Mismatch — config.py vs loader.py
-     caller: 1箇所, recursive=False を渡した時のみ発火（現在の呼び出し元はすべて True）
+     caller: 1箇所, recursive=False を渡した時のみ発火
      → 放置すると: recursive=False で呼ばれた場合にネストされた設定が無視される
-  #4 [🔁 KNOWN]   ① Asymmetric Defaults — parser.ts vs serializer.ts
-     既存 Issue #1234 で報告済み（open）
-  #5 [🪦 DEAD]    ① Asymmetric Defaults — old_handler.ts vs utils.ts
-     caller: 0箇所（コメントアウト済み）
-  #6 [✅ FIXED]   ④ Guard Non-Propagation — auth.go vs middleware.go
-     develop ブランチで修正済み（commit abc1234）
 
-🎯 対応推奨: #1 は確定バグ → Issue/PR 推奨。
-   #2 は要検討（テスト確認後に判断）。#3 は条件付きリスク。#4-#6 は無視可。
+除外: 🪦 DEAD 1件 / ✅ FIXED 1件 / 🔁 KNOWN 1件
+
+🎯 確定バグ {confirmed}件は Issue/PR 提出候補です。
 ```
 
 **CONFIRMED/SUSPICIOUS/DORMANT の finding には必ず「→ 放置すると:」行を付ける。** finding の `user_impact` フィールドから要約する。これが delta-lint の最大の訴求ポイント — 「コードの問題」ではなく「ユーザーが受ける実害」を伝える。DEAD/FIXED/KNOWN/BY_DESIGN には不要。
@@ -367,19 +372,45 @@ update_status('{repo_path}', '{repo_name}', '{finding_id}', '{new_status}')
 
 ### 報告フォーマット（調査完了後、全件まとめて報告）
 
+**確定バグを最上部に目立たせ、除外は折りたたむ。** ユーザーが最初に目にするのは「今すぐ対処が必要なもの」でなければならない。
+
 ```
 ── δ-lint ── 調査完了: {total}件中 {confirmed}件確定 / {suspicious}件要注意 / {wontfix+fp}件除外
 
-dl-{id}: {title の先頭60文字}
-  → confirmed — {根拠を1行で}
-dl-{id}: {title}
-  → suspicious — {なぜ確証不足か1行で}
-dl-{id}: {title}
-  → false_positive — {なぜ誤検出か1行で}
-...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔴 確定バグ — {confirmed}件（Issue/PR 提出候補）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 confirmed の {n}件は Issue/PR 提出候補です。提出しますか？
+  1. dl-{id}: {title}
+     {file_a} vs {file_b}
+     → 放置すると: {user_impact}
+     根拠: {根拠を1行で}
+
+  2. dl-{id}: {title}
+     {file_a} vs {file_b}
+     → 放置すると: {user_impact}
+     根拠: {根拠を1行で}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🟡 要注意 — {suspicious}件（追加調査を推奨）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. dl-{id}: {title}
+     → {なぜ確証不足か1行で}
+
+除外: {false_positive}件 false_positive / {wontfix}件 wontfix
+  （詳細は findings dashboard を参照）
+
+🎯 確定バグ {confirmed}件は Issue/PR 提出候補です。提出しますか？
 ```
+
+**フォーマットルール:**
+- 確定バグ（CONFIRMED）は `━━` 罫線で囲んで視覚的に分離する
+- 各確定バグには必ず `→ 放置すると:` 行を付ける（ユーザーインパクトが最大の訴求）
+- 要注意（SUSPICIOUS/DORMANT）は罫線で区切るが、確定バグより簡潔に
+- 除外（false_positive / wontfix / dead / fixed / known / by_design）は1行サマリーに折りたたむ。個別の理由は表示しない
+- 確定バグが0件の場合は「🔴 確定バグ」セクション自体を省略し、要注意セクションから始める
+- 要注意も0件の場合は除外サマリーのみ表示
 
 ### 完走チェック
 
