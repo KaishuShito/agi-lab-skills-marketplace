@@ -25,17 +25,23 @@ INDEX_FILE = "_index.md"
 # Valid values
 VALID_TYPES = ("bug", "contradiction", "suspicious", "enhancement")
 VALID_SEVERITIES = ("high", "medium", "low")
-VALID_STATUSES = (
-    "found",        # 発見したばかり（未トリアージ）
-    "suspicious",   # 高確率バグだが確証不足（内部証拠なし / 影響が曖昧 / 条件付き到達）
-    "confirmed",    # 確定バグ（OSSプロジェクトに Issue/PR を出せるレベルの確証あり）
-    "submitted",    # Issue/PR 提出済み
-    "merged",       # PR マージ済み
-    "rejected",     # メンテナに却下された
-    "wontfix",      # 意図的な設計 / デッドコード / 修正済み
-    "duplicate",    # 既知の Issue/PR あり
-    "false_positive",  # 偽陽性（コード確認で否定）
-)
+# ---------------------------------------------------------------------------
+# ステータス定義 — 唯一の正規定義 (Single Source of Truth)
+# scoring.py, dashboard, workflow すべてここを参照する
+# ---------------------------------------------------------------------------
+STATUS_META: dict[str, dict] = {
+    "found":          {"label": "未トリアージ",   "color": "link",      "closed": False, "debt_weight": 1.0},
+    "suspicious":     {"label": "⚠ 要調査",      "color": "#ffa502",   "closed": False, "debt_weight": 0.9},
+    "confirmed":      {"label": "✓ 確定バグ",     "color": "sev-high",  "closed": False, "debt_weight": 1.0},
+    "submitted":      {"label": "提出済み",       "color": "sev-medium","closed": False, "debt_weight": 0.8},
+    "merged":         {"label": "修正済み",       "color": "green-400", "closed": True,  "debt_weight": 0.0},
+    "rejected":       {"label": "却下",           "color": "sev-high",  "closed": True,  "debt_weight": 0.5},
+    "wontfix":        {"label": "対応不要",       "color": "sev-low",   "closed": True,  "debt_weight": 0.0},
+    "duplicate":      {"label": "重複",           "color": "sev-low",   "closed": True,  "debt_weight": 0.0},
+    "false_positive": {"label": "偽陽性",         "color": "txt-muted", "closed": True,  "debt_weight": 0.0},
+}
+
+VALID_STATUSES = tuple(STATUS_META.keys())
 
 
 # Category is a free-form string — not validated.
@@ -1092,7 +1098,7 @@ def _findings_verify_top(base_path: str, args) -> None:
     """Re-verify top 1/3 of findings by priority score.
 
     Reads source files referenced by each finding, sends to verifier LLM,
-    and updates status to 'verified' (confirmed) or 'wontfix' (rejected).
+    and updates status to 'confirmed' or 'wontfix' (rejected).
     """
     from scoring import compute_roi
     from info_theory import finding_information_score
@@ -1614,7 +1620,7 @@ def generate_dashboard(
 
     # KPI: 確実バグ = status が confirmed のもの
     # 未検証 = found のまま残っている findings
-    resolved_statuses = {"merged", "wontfix", "duplicate", "rejected", "false_positive"}
+    resolved_statuses = {k for k, v in STATUS_META.items() if v["closed"]}
     confirmed_bugs = sum(
         1 for f in findings
         if f.get("status") == "confirmed"
@@ -1810,7 +1816,21 @@ def generate_dashboard(
     repos = list(stats.get("by_repo", {}).keys())
     primary_repo = repos[0] if len(repos) == 1 else base_path.resolve().name
 
+    # STATUS_META → JS 定数 + HTML テキストとして注入
+    status_meta_json = json.dumps(STATUS_META, ensure_ascii=False)
+
+    # debt 係数説明テキスト: "found/confirmed=1.0 / suspicious=0.9 / ..."
+    from collections import defaultdict as _defaultdict
+    _weight_groups: dict[float, list[str]] = _defaultdict(list)
+    for _s, _m in STATUS_META.items():
+        _weight_groups[_m["debt_weight"]].append(_s)
+    status_weights_text = " / ".join(
+        f"{'/'.join(names)}={w}" for w, names in sorted(_weight_groups.items(), reverse=True)
+    )
+
     html = template.safe_substitute(
+        status_meta_json=status_meta_json,
+        status_weights_text=status_weights_text,
         total_count=stats["total"],
         repo_count=len(stats.get("by_repo", {})),
         primary_repo=primary_repo,

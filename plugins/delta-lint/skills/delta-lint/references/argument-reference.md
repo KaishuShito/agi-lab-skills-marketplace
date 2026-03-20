@@ -48,10 +48,9 @@
 | `--pattern` | - | Contradiction pattern (①〜⑥) |
 | `--title` | - | Short title |
 | `--description` | - | Detailed description |
-| `--status` | `found` | `found` / `verified` / `submitted` / `merged` / `rejected` / `wontfix` / `duplicate` |
+| `--status` | `found` | `found` / `suspicious` / `confirmed` / `submitted` / `merged` / `rejected` / `wontfix` / `duplicate` / `false_positive` |
 | `--url` | - | GitHub Issue/PR URL |
 | `--found-by` | - | Who found it (`claude-opus` etc.) |
-| `--verified` | false | Code-verified flag |
 | `--format` | `text` | Output format for list/stats: `text` / `json` |
 
 ## Scan Profiles

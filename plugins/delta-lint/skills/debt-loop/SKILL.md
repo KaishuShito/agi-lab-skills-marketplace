@@ -80,7 +80,7 @@ python debt_loop.py --repo <REPO_PATH> --dry-run -v [OPTIONS]
 | `--ids` | (none) | Comma-separated finding IDs to fix (overrides priority) |
 | `--model` | claude-sonnet-4-20250514 | LLM model for fix generation |
 | `--backend` | cli | `cli` ($0) or `api` (pay-per-use) |
-| `--status` | found,verified | Statuses to include |
+| `--status` | found,confirmed | Statuses to include |
 | `--dry-run` | true | Generate fixes but don't commit/push/PR (スキルからは常に true で呼ぶ) |
 | `--verbose` / `-v` | false | Show progress |
 | `--json` | false | JSON output |

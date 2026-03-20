@@ -80,7 +80,7 @@ from findings import update_status
 update_status('{repo_path}', '{repo_name}', '{finding_id}', '{new_status}')
 "
 ```
-   - Confirmed bug → `verified`
+   - Confirmed bug → `confirmed`
    - Dead code / no callers → `wontfix`
    - Already fixed → `wontfix`
    - By design → `wontfix`

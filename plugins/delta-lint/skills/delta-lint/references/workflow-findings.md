@@ -31,10 +31,9 @@ cd ~/.claude/skills/delta-lint/scripts && python cli.py findings add \
   --pattern "④ Guard Non-Propagation" \
   --title "TTL refresh guard condition inverted" \
   --description "is_alive() returns True for expired entries" \
-  --status verified \
+  --status confirmed \
   --url "https://github.com/owner/repo/pull/123" \
-  --found-by "claude-opus" \
-  --verified
+  --found-by "claude-opus"
 ```
 
 | Field | Required | Description |
@@ -48,10 +47,9 @@ cd ~/.claude/skills/delta-lint/scripts && python cli.py findings add \
 | `--pattern` | No | 矛盾パターン（①〜⑥） |
 | `--title` | Yes | 短いタイトル |
 | `--description` | No | 詳細説明 |
-| `--status` | No | `found` / `verified` / `submitted` / `merged` / `rejected` / `wontfix` / `duplicate` |
+| `--status` | No | `found` / `suspicious` / `confirmed` / `submitted` / `merged` / `rejected` / `wontfix` / `duplicate` / `false_positive` |
 | `--url` | No | GitHub Issue/PR URL |
 | `--found-by` | No | 発見者（`claude-opus` 等） |
-| `--verified` | No | コード確認済みフラグ |
 
 ### findings list — 一覧表示
 

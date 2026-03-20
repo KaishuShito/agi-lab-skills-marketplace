@@ -3026,7 +3026,6 @@ def cmd_scan(args):
         if len(result.filtered) > 0:
             # Auto-suppress low severity findings that are unlikely to be fixed
             try:
-                from suppress import SuppressEntry, save_suppressions, load_suppressions
                 from suppress import finding_hash, code_hash
                 existing = load_suppressions(repo_path)
                 new_suppressions = []

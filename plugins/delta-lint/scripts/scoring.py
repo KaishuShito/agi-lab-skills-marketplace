@@ -53,16 +53,19 @@ DEFAULT_PATTERN_WEIGHT: dict[str, float] = {
     "⑩": 0.4,
 }
 
-DEFAULT_STATUS_MULTIPLIER: dict[str, float] = {
-    "found": 1.0,
-    "confirmed": 1.0,
-    "suspicious": 0.9,
-    "submitted": 0.8,
-    "merged": 0.0,
-    "rejected": 0.5,
-    "wontfix": 0.0,
-    "duplicate": 0.0,
-}
+# STATUS_META (findings.py) が正規定義。ここではそこから debt_weight を転写する。
+# 循環 import を避けるため遅延読み込み + フォールバック。
+def _build_status_multiplier() -> dict[str, float]:
+    try:
+        from findings import STATUS_META
+        return {k: v["debt_weight"] for k, v in STATUS_META.items()}
+    except ImportError:
+        # findings.py が読めない環境（単体テスト等）用フォールバック
+        return {"found": 1.0, "confirmed": 1.0, "suspicious": 0.9,
+                "submitted": 0.8, "merged": 0.0, "rejected": 0.5,
+                "wontfix": 0.0, "duplicate": 0.0, "false_positive": 0.0}
+
+DEFAULT_STATUS_MULTIPLIER: dict[str, float] = _build_status_multiplier()
 
 # ---------------------------------------------------------------------------
 # ROI weights — used by 解消価値 = severity × churn × fan_out / fix_cost

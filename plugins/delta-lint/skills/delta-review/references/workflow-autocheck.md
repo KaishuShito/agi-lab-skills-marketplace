@@ -24,7 +24,7 @@ cd ~/.claude/skills/delta-lint/scripts && python -c "
 from findings import list_findings
 import json
 findings = list_findings('{repo_path}')
-active = [f for f in findings if f.get('status') in ('found', 'verified', 'submitted')]
+active = [f for f in findings if f.get('status') in ('found', 'suspicious', 'confirmed', 'submitted')]
 if active:
     for f in active[:10]:
         print(f'{f.get(\"pattern\",\"?\")} {f.get(\"severity\",\"?\")} {f.get(\"file\",\"\")} — {f.get(\"title\",\"\")[:80]}')
