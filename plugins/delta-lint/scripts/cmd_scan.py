@@ -1,8 +1,8 @@
-"""Scan-related CLI commands for delta-lint."""
+"""cmd_scan – scan commands extracted from cli.py for modularity."""
 
-import json
+import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from retrieval import get_changed_files, filter_source_files, build_context
@@ -10,20 +10,20 @@ from detector import detect
 from output import filter_findings, print_results, save_log
 from suppress import (
     SuppressEntry,
-    compute_finding_hash as finding_hash,
-    compute_code_hash as code_hash,
+    compute_finding_hash,
+    compute_code_hash,
     load_suppressions,
     save_suppressions,
 )
 from cli_utils import (
-    _adaptive_since,
     _check_environment,
-    _open_dashboard,
+    _adaptive_since,
     _count_findings_on_disk,
     _format_elapsed,
     _print_batch_progress,
-    _load_config,
+    _open_dashboard,
     _auto_discover_docs,
+    _load_config,
     _apply_category_severity_boost,
     _build_baseline_hashes,
     _save_baseline_snapshot,

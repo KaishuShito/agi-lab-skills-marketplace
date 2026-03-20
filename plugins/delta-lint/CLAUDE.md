@@ -42,12 +42,15 @@ agi-lab-skills-marketplace/plugins/delta-lint/scripts/
 ## モジュール依存関係
 
 ```
-cli.py          ─── メイン CLI。1600行。関数単位で読め
-├── detector.py      ─── LLM スキャン（通常）
-├── retrieval.py     ─── ファイル取得 + import 依存解析
-├── findings.py      ─── JSONL 管理 + ダッシュボード生成
-│   ├── scoring.py       ─── スコアリング重み（ROI, debt_score）
-│   └── info_theory.py   ─── 情報理論スコアリング（surprise, Chao1）
+cli.py              ─── メイン CLI エントリポイント（1120行）。argparse + view/suppress/config コマンド
+├── cli_utils.py        ─── 共通ユーティリティ（750行）。環境チェック、config/profile 読込、ベースライン
+├── cmd_scan.py         ─── scan コマンド群（1560行）。cmd_scan, cmd_scan_deep, cmd_scan_full, cmd_watch
+├── cmd_init.py         ─── init コマンド（507行）。リポジトリ初期化
+├── detector.py         ─── LLM スキャン（通常）
+├── retrieval.py        ─── ファイル取得 + import 依存解析
+├── findings.py         ─── JSONL 管理 + ダッシュボード生成
+│   ├── scoring.py          ─── スコアリング重み（ROI, debt_score）
+│   └── info_theory.py      ─── 情報理論スコアリング（surprise, Chao1）
 ├── surface_extractor.py ─── Deep scan Phase 0（正規表現抽出）
 ├── contract_graph.py    ─── 契約グラフ検出（WordPress 等フック系向け、レガシー）
 ├── deep_verifier.py     ─── Deep scan Phase 2（LLM 検証、contract_graph 用）
