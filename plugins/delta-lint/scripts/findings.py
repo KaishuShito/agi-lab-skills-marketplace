@@ -199,7 +199,7 @@ def compute_scan_depth(base_path: str | Path) -> dict:
 
     matrix = compute_coverage_matrix(base_path)
     cells_done = matrix.get("cells_done", 0)
-    cells_total = matrix.get("cells_total", 10)
+    cells_total = matrix.get("cells_total", 9)
     total_runs = sum(c.get("count", 0) for c in matrix.get("cells", []))
 
     if cells_done == 0:
@@ -256,8 +256,8 @@ def compute_coverage_matrix(base_path: str | Path) -> dict:
     """Compute a 3-axis coverage matrix from scan history.
 
     cells: all 24 scope × depth × lens combinations (for backward compat).
-    cells_done / cells_total: based on 10 logical cells:
-      - 8 scope × depth (default lens) in the matrix
+    cells_done / cells_total: based on 9 logical cells:
+      - 7 scope × depth (default lens, excluding pr×default)
       - 1 stress (scope-independent)
       - 1 security (scope-independent)
 
