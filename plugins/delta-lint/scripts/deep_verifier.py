@@ -106,7 +106,8 @@ def _call_claude_cli(system: str, user: str) -> Optional[str]:
     prompt = system + "\n\n" + user
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            ["claude", "-p"],
+            input=prompt,
             capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
         )
         if result.returncode != 0:
