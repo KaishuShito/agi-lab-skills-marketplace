@@ -1,82 +1,43 @@
 """
-Information-theoretic scoring for delta-lint.
+Information-theoretic helpers for delta-lint.
 
-Implements concepts from 負債の情報理論.md:
-- Surprise: -log₂ P(violation) — rarer violations carry more information
-- Coverage: Chao1 estimator for undiscovered constraints
-- Discovery rate: trend analysis from scan history
-- Information score: unified metric combining surprise, entropy, fan-out
+- **info_score**: discovery_value × concentration_factor × INFO_SCALE
+  (newness within the repo × hotspot concentration). Does not use fan_out;
+  propagation risk is covered by context_score / ROI in scoring.py.
 
-Reference: scoring.py の roi_score はこのモジュールの直感的近似。
+  Current implementation is a simplified heuristic. Future work: true information
+  theory (self-information -log₂ P(finding exists) or conditional entropy reduction
+  from fixing this finding). Requires probabilistic model of codebase state.
+
+- **Chao1 / discovery_rate / compute_coverage_from_history**: coverage estimation
+  from scan history (how many undiscovered findings may remain).
 """
+
+from __future__ import annotations
 
 import math
 from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# 1. Surprise — 自己情報量 -log₂ P(violation)
-# ---------------------------------------------------------------------------
-
-# 歴史的パターン発見率（全リポ平均）。スキャン回数が増えると更新される。
-# 初期値は delta-lint の 129件分析データから推定。
-DEFAULT_PATTERN_RATE: dict[str, float] = {
-    "①": 0.15,   # Asymmetric Defaults — 中頻度
-    "②": 0.25,   # Semantic Mismatch — 最頻出
-    "③": 0.08,   # Silent Fallback Divergence — 稀
-    "④": 0.30,   # Guard Non-Propagation — 最頻出
-    "⑤": 0.10,   # Paired-Setting Override
-    "⑥": 0.05,   # Lifecycle Ordering — 稀
-    "⑦": 0.20,   # Dead Code
-    "⑧": 0.15,   # Duplication Drift
-    "⑨": 0.12,   # Interface Mismatch
-    "⑩": 0.08,   # Missing Abstraction
-}
+# Closed statuses — same semantics as dashboard / debt_total
+_RESOLVED_STATUSES = frozenset({
+    "merged", "wontfix", "duplicate", "rejected", "false_positive",
+})
 
 
-def surprise(p_violation: float) -> float:
-    """Self-information: -log₂ P(violation).
-
-    P が低い（稀な）違反ほどサプライズが大きい = 重大。
-    0-1 に正規化（cap: -log₂(0.01) ≈ 6.64）。
-
-    Args:
-        p_violation: 0 < p <= 1. この種の違反が発見される確率。
-
-    Returns:
-        0.0 (常に見つかる) 〜 1.0 (極めて稀)
-    """
-    if p_violation <= 0:
-        return 1.0
-    if p_violation >= 1:
-        return 0.0
-    raw = -math.log2(p_violation)
-    return min(round(raw / 6.64, 3), 1.0)
+def _file_key(f: dict) -> str:
+    loc = f.get("location") or {}
+    s = (f.get("file") or loc.get("file_a") or "").strip()
+    return s or "__empty__"
 
 
-def surprise_from_pattern(pattern: str, history: list[dict] | None = None) -> float:
-    """パターン番号から surprise を計算する。
-
-    history が渡されれば実測の発見率を使う。なければ DEFAULT_PATTERN_RATE。
-    """
-    if history and len(history) >= 3:
-        # 実測: このパターンが見つかったスキャンの割合
-        total_scans = len(history)
-        scans_with_pattern = sum(
-            1 for h in history
-            if pattern in h.get("patterns_found", [])
-        )
-        if scans_with_pattern > 0:
-            rate = scans_with_pattern / total_scans
-            return surprise(rate)
-
-    rate = DEFAULT_PATTERN_RATE.get(pattern, 0.15)
-    return surprise(rate)
+def _is_open(f: dict) -> bool:
+    return f.get("status", "found") not in _RESOLVED_STATUSES
 
 
 # ---------------------------------------------------------------------------
-# 2. Chao1 — 未発見の制約数を推定
+# Chao1 — 未発見の制約数を推定
 # ---------------------------------------------------------------------------
+
 
 def chao1_estimate(observed: int, singletons: int, doubletons: int) -> dict:
     """Chao1 species richness estimator.
@@ -137,8 +98,9 @@ def chao1_estimate(observed: int, singletons: int, doubletons: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. Discovery rate — 発見レート分析
+# Discovery rate — 発見レート分析
 # ---------------------------------------------------------------------------
+
 
 def discovery_rate(new_per_scan: list[int]) -> dict:
     """スキャンごとの新規 findings 数から発見レートのトレンドを分析。
@@ -179,71 +141,9 @@ def discovery_rate(new_per_scan: list[int]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 4. File entropy — ファイルの不確実性
+# Coverage from scan history — スキャン履歴からカバレッジ推定
 # ---------------------------------------------------------------------------
 
-def file_entropy(changes_6m: int, total_lines: int) -> float:
-    """ファイルの変異率からエントロピーを推定。
-
-    churn が高い（頻繁に変わる）ファイルほど現在の状態の不確実性が高い。
-    H(p) = -p log₂(p) - (1-p) log₂(1-p)  (binary entropy)
-
-    Returns:
-        0.0 (安定) 〜 1.0 (高変動)
-    """
-    if total_lines <= 0 or changes_6m <= 0:
-        return 0.0
-
-    p = min(changes_6m / total_lines, 1.0)
-    if p >= 1.0:
-        return 1.0
-
-    q = 1 - p
-    h = -p * math.log2(p)
-    if q > 0:
-        h -= q * math.log2(q)
-    return round(h, 3)
-
-
-# ---------------------------------------------------------------------------
-# 5. Information score — 情報理論ベースの統合スコア
-# ---------------------------------------------------------------------------
-
-def information_score(
-    severity_surprise: float,
-    churn_entropy: float,
-    fan_out: int,
-    fix_cost: float,
-) -> float:
-    """情報理論ベースの finding スコア。
-
-    score = surprise × (1 + entropy) × log₂(1 + fan_out) / fix_cost × INFO_SCALE
-
-    出力レンジ: 0 〜 数千。
-    典型例:
-      稀パターン + 高変動 + 5 fan_out + 安い修正  → ~900
-      頻出パターン + 安定 + 1 fan_out + 高コスト  → ~5
-
-    負債の情報理論.md との対応:
-    - surprise     → 自己情報量 -log₂ P(failure)
-    - entropy      → ファイルのエントロピー（状態の不確実性）
-    - fan_out      → チャネル数（矛盾の伝播経路）
-    - fix_cost     → 最小記述に戻すための編集距離
-
-    roi_score との違い:
-    - severity を連続的な確率ベースに（high/medium/low ラベルではなく）
-    - fan_out に対数スケール適用（10→100 より 0→10 の方が影響大）
-    """
-    from scoring import INFO_SCALE
-
-    channel_weight = math.log2(1 + max(fan_out, 1))
-    raw = severity_surprise * (1 + churn_entropy) * channel_weight / max(fix_cost, 0.1)
-    return round(raw * INFO_SCALE, 1)
-
-
-# ---------------------------------------------------------------------------
-# 6. Coverage from scan history — スキャン履歴からカバレッジ推定
-# ---------------------------------------------------------------------------
 
 def compute_coverage_from_history(
     scan_history: list[dict],
@@ -336,39 +236,64 @@ def compute_coverage_from_history(
 
 
 # ---------------------------------------------------------------------------
-# 7. Compute information score for a finding dict
+# Information score — repo-relative novelty × hotspot concentration
 # ---------------------------------------------------------------------------
+
 
 def finding_information_score(
     finding: dict[str, Any],
     pattern_history: list[dict] | None = None,
+    all_findings: list[dict] | None = None,
 ) -> dict:
-    """既存の finding dict から情報理論スコアを計算する。
+    """Compute info_score from discovery novelty and file hotspot concentration.
+
+    - discovery_value: 1 / sqrt(n) where n = count of findings with same pattern
+      in this repo (including self). More repeats of the same pattern → lower.
+    - concentration_factor: log2(1 + m) where m = open findings on the same file.
+      Hotspots get higher weight. fan_out is intentionally omitted (ROI covers it).
+
+    Args:
+        finding: Single finding dict.
+        pattern_history: Reserved for future use; ignored.
+        all_findings: Full list of findings in the repo for aggregation.
+            If None, treats as a single-finding repo (n=m=1).
 
     Returns:
-        dict with surprise, entropy, info_score, and breakdown
+        dict with discovery_value, concentration_factor, info_score, breakdown.
     """
-    pattern = finding.get("pattern", "")
-    sev_surprise = surprise_from_pattern(pattern, pattern_history)
+    from scoring import INFO_SCALE
 
-    churn_6m = finding.get("churn_6m", 0)
-    total_lines = finding.get("total_lines", 500)  # fallback
-    entropy = file_entropy(churn_6m, total_lines)
+    pool = all_findings if all_findings is not None else [finding]
+    pattern = (finding.get("pattern") or "").strip()
+    file_key = _file_key(finding)
 
-    fan_out = finding.get("fan_out", 1)
-    fix_cost = finding.get("fix_cost", 1.0)
+    same_pattern_count = sum(
+        1 for f in pool
+        if (f.get("pattern") or "").strip() == pattern
+    )
+    if same_pattern_count < 1:
+        same_pattern_count = 1
+    discovery_value = 1.0 / math.sqrt(same_pattern_count)
 
-    score = information_score(sev_surprise, entropy, fan_out, fix_cost)
+    open_in_file = sum(
+        1 for f in pool
+        if _file_key(f) == file_key and _is_open(f)
+    )
+    if open_in_file < 1:
+        open_in_file = 1
+    concentration_factor = math.log2(1 + open_in_file)
+
+    raw = discovery_value * concentration_factor
+    score = round(raw * INFO_SCALE, 1)
 
     return {
-        "surprise": sev_surprise,
-        "entropy": entropy,
+        "discovery_value": round(discovery_value, 4),
+        "concentration_factor": round(concentration_factor, 4),
         "info_score": score,
         "breakdown": {
-            "surprise": sev_surprise,
-            "entropy": entropy,
-            "fan_out": fan_out,
-            "channel_weight": round(math.log2(1 + max(fan_out, 1)), 2),
-            "fix_cost": fix_cost,
+            "same_pattern_count": same_pattern_count,
+            "open_in_file": open_in_file,
+            "discovery_value": discovery_value,
+            "concentration_factor": concentration_factor,
         },
     }

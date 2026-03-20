@@ -49,9 +49,9 @@ cli.py          ─── メイン CLI。1600行。関数単位で読め
 │   ├── scoring.py       ─── スコアリング重み（ROI, debt_score）
 │   └── info_theory.py   ─── 情報理論スコアリング（surprise, Chao1）
 ├── surface_extractor.py ─── Deep scan Phase 0（正規表現抽出）
-├── contract_graph.py    ─── Deep scan Phase 1（転置インデックス）— --depth graph はこのパイプライン
-├── deep_verifier.py     ─── Deep scan Phase 2（LLM 検証）
-│   ※ detect() に depth パラメータはない（意図的設計）。--depth graph は cmd_scan_deep() → contract_graph 経由の別パイプラインで動作
+├── contract_graph.py    ─── 契約グラフ検出（WordPress 等フック系向け、レガシー）
+├── deep_verifier.py     ─── Deep scan Phase 2（LLM 検証、contract_graph 用）
+│   ※ --depth deep は通常スキャンと同じ LLM パスで max_hops=3 の依存解決を行う
 ├── git_enrichment.py    ─── Git churn/fan_out 計算（スキャン時に finding へ埋め込み）
 ├── output.py            ─── 表示フォーマット
 ├── suppress.py          ─── 抑制管理
@@ -65,7 +65,7 @@ cli.py          ─── メイン CLI。1600行。関数単位で読め
 ```bash
 cd scripts/
 python cli.py scan --repo /path/to/repo         # 通常スキャン
-python cli.py scan --repo /path/to/repo --depth graph  # Deep scan（旧: --deep）
+python cli.py scan --repo /path/to/repo --depth deep   # 深層スキャン（依存チェーンを辿る）
 python cli.py findings list --repo /path/to/repo # Findings 一覧
 python cli.py findings dashboard --repo /path    # ダッシュボード生成
 ```

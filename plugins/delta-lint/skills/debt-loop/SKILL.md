@@ -100,7 +100,7 @@ python debt_loop.py --repo <REPO_PATH> --dry-run -v [OPTIONS]
 
 `priority = info_score + roi_score + severity_bonus`
 
-- **info_score**: surprise × entropy × fan_out 等から算出（`info_theory.py`）
+- **info_score**: discovery_value × concentration_factor × INFO_SCALE（同一リポ内のパターン件数とファイル集中度。`info_theory.py`）
 - **roi_score**: severity × churn × fan_out / fix_cost 等から算出（`scoring.py`）
 - **severity_bonus**: high=300, medium=100, low=0
 

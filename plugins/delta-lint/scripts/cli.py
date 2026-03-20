@@ -76,6 +76,63 @@ from findings import cmd_findings
 
 
 # ---------------------------------------------------------------------------
+# Adaptive time window
+# ---------------------------------------------------------------------------
+
+def _adaptive_since(repo_path: str, verbose: bool = False) -> str:
+    """Determine scan time window based on commit frequency.
+
+    Low-activity repos need a wider window to capture enough context.
+    Returns a git-compatible --since value like "3months" or "9months".
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "log", "--since=3 months", "--oneline"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        commit_count = len([l for l in result.stdout.strip().split("\n") if l.strip()])
+    except Exception:
+        return "3months"
+
+    # Thresholds: adapt window based on commit density
+    if commit_count >= 30:
+        since = "3months"
+    elif commit_count >= 10:
+        since = "6months"
+    elif commit_count >= 3:
+        since = "9months"
+    else:
+        since = "1year"
+
+    if verbose or since != "3months":
+        print(f"  🔍 Adaptive window: {commit_count} commits in 3 months → since={since}", file=sys.stderr)
+    return since
+
+
+# ---------------------------------------------------------------------------
+# Dashboard auto-open helper
+# ---------------------------------------------------------------------------
+
+def _is_ci() -> bool:
+    """Detect CI environment."""
+    return bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS")
+                or os.environ.get("GITLAB_CI") or os.environ.get("JENKINS_URL"))
+
+
+def _open_dashboard(dash_path: str, *, force: bool = False) -> bool:
+    """Open dashboard in browser if not CI. Returns True if opened."""
+    if _is_ci() and not force:
+        return False
+    try:
+        import webbrowser
+        webbrowser.open(f"file://{dash_path}")
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Batch progress helpers
 # ---------------------------------------------------------------------------
 
@@ -798,6 +855,7 @@ def _apply_config_to_parser(parser, config: dict):
         "no_learn": "no_learn",
         "no_cache": "no_cache",
         "no_verify": "no_verify",
+        "no_open": "no_open",
     }
     new_defaults = {}
     for config_key, dest in mapping.items():
@@ -1153,7 +1211,7 @@ def cmd_init(args):
                         severity=f.get("severity", "medium"),
                         pattern=pattern,
                         title=title,
-                        description=f.get("impact", ""),
+                        description=f.get("impact", f.get("user_impact", "")),
                         category=f.get("category", "contradiction"),
                         found_by="delta-init",
                         churn_6m=f.get("churn_6m", 0),
@@ -1188,31 +1246,30 @@ def cmd_init(args):
                 dash_path = generate_dashboard(repo_path, scan_progress=progress, treemap_json=_treemap, dashboard_template=_dash_tpl)
 
                 # Open browser on first generation
-                if not dashboard_opened:
-                    webbrowser.open(f"file://{dash_path}")
-                    dashboard_opened = True
-                    print(f"  📊 ダッシュボード: {dash_path}", file=sys.stderr)
+                if not dashboard_opened and not getattr(args, 'no_open', False):
+                    if _open_dashboard(str(dash_path)):
+                        dashboard_opened = True
+                        print(f"  📊 ダッシュボード: {dash_path}", file=sys.stderr)
 
                 print(f"  [{completed}/{total}] {cluster_new} 件検出 (累計 {n_findings} 件)", file=sys.stderr)
 
             print(f"  🔍 {n_findings} 件検出、{n_saved} 件を findings に記録", file=sys.stderr)
 
-            if n_findings > 0:
-                try:
-                    from findings import append_scan_history
-                    append_scan_history(
-                        repo_path,
-                        clusters=total,
-                        findings_count=n_findings,
-                        scan_type="existing",
-                        finding_ids=all_fids,
-                        patterns_found=all_patterns,
-                        scope="smart",
-                        depth="1hop",
-                        lens="default",
-                    )
-                except Exception:
-                    pass
+            try:
+                from findings import append_scan_history
+                append_scan_history(
+                    repo_path,
+                    clusters=total,
+                    findings_count=n_findings,
+                    scan_type="existing",
+                    finding_ids=all_fids,
+                    patterns_found=all_patterns,
+                    scope="smart",
+                    depth="default",
+                    lens="default",
+                )
+            except Exception:
+                pass
         except Exception as e:
             if args.verbose:
                 import traceback
@@ -1222,7 +1279,9 @@ def cmd_init(args):
         # --- Wait for stress test to finish ---
         if stress_thread.is_alive():
             print("  ⏳ ストレステスト完了を待機中...", file=sys.stderr)
-        stress_thread.join()
+        stress_thread.join(timeout=7200)
+        if stress_thread.is_alive():
+            print("  [warn] ストレステストがタイムアウト(2h)しました。スキップします。", file=sys.stderr)
 
         if stress_result["error"]:
             print(f"  [warn] ストレステスト失敗: {stress_result['error']}", file=sys.stderr)
@@ -1373,16 +1432,21 @@ def cmd_scan_deep(args):
 def cmd_scan_full(args):
     """Run full stress-test scan (heavy, 10-30 minutes)."""
     repo_path = str(Path(args.repo).resolve())
+    parallel = getattr(args, 'parallel', 10)
+    max_wall_time = getattr(args, 'max_wall_time', 2400)
 
     print("── δ-lint ── フルスキャン（ストレステスト）開始", file=sys.stderr)
-    print("  仮想改修を生成してスキャンします（10-30分）...", file=sys.stderr)
+    print(f"  仮想改修を生成してスキャンします（並列{parallel}、最大{max_wall_time//60}分）...", file=sys.stderr)
+    print(f"  進捗は results.json に逐次保存されます", file=sys.stderr)
 
     from stress_test import run_stress_test
     run_stress_test(
         repo_path,
         backend=getattr(args, 'backend', 'cli'),
-        verbose=getattr(args, 'verbose', False),
+        verbose=True,
         lang=getattr(args, 'lang', 'en'),
+        parallel=parallel,
+        max_wall_time=max_wall_time,
     )
 
     # Convert high-risk files to debt findings
@@ -1466,7 +1530,10 @@ def cmd_watch(args):
 
             try:
                 # Build context
-                context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
+                _depth = getattr(args, '_depth', 'default')
+                _scope = getattr(args, '_scope', 'diff')
+                _hops = 3 if (_depth == 'deep' or _scope == 'pr') else 1
+                context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None), max_hops=_hops)
                 if not context.target_files:
                     print(f"  ⚠ No readable source files. Skipping.", file=sys.stderr)
                     time.sleep(interval)
@@ -1633,9 +1700,9 @@ def cmd_scan(args):
             ]
             if base_ref:
                 cmd.extend(["--base", resolved_base])
-            _depth = getattr(args, '_depth', '1hop')
+            _depth = getattr(args, '_depth', 'default')
             _lens = getattr(args, '_lens', 'default')
-            if _depth != "1hop":
+            if _depth != "default":
                 cmd.extend(["--depth", _depth])
             if _lens != "default":
                 cmd.extend(["--lens", _lens])
@@ -1650,10 +1717,20 @@ def cmd_scan(args):
                 cmd.append("--no-verify")
             if getattr(args, 'autofix', False):
                 cmd.append("--autofix")
-            result = subprocess.run(cmd, cwd=repo_path)
+            cmd.append("--no-open")  # parent controls browser open
+            try:
+                result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+            except subprocess.TimeoutExpired:
+                print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
+                continue
             if result.returncode == 1:
                 all_high += 1
             current_findings = _count_findings_on_disk(repo_path)
+            # Open dashboard on first batch that produces findings
+            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
+                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                if _dash.exists():
+                    _open_dashboard(str(_dash))
             _print_batch_progress(
                 i, len(batches), len(batch),
                 current_findings, _time.monotonic() - t0,
@@ -1677,7 +1754,7 @@ def cmd_scan(args):
                     findings_count=new_findings,
                     scan_type="existing",
                     scope="pr",
-                    depth=getattr(args, '_depth', '1hop'),
+                    depth=getattr(args, '_depth', 'default'),
                     lens=getattr(args, '_lens', 'default'),
                 )
             except Exception:
@@ -1720,9 +1797,9 @@ def cmd_scan(args):
                 "--severity", getattr(args, 'severity', 'high'),
                 "--lang", getattr(args, 'lang', 'en'),
             ]
-            _depth = getattr(args, '_depth', '1hop')
+            _depth = getattr(args, '_depth', 'default')
             _lens = getattr(args, '_lens', 'default')
-            if _depth != "1hop":
+            if _depth != "default":
                 cmd.extend(["--depth", _depth])
             if _lens != "default":
                 cmd.extend(["--lens", _lens])
@@ -1737,10 +1814,19 @@ def cmd_scan(args):
                 cmd.append("--no-verify")
             if getattr(args, 'autofix', False):
                 cmd.append("--autofix")
-            result = subprocess.run(cmd, cwd=repo_path)
+            cmd.append("--no-open")  # parent controls browser open
+            try:
+                result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+            except subprocess.TimeoutExpired:
+                print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
+                continue
             if result.returncode == 1:
                 all_high += 1
             current_findings = _count_findings_on_disk(repo_path)
+            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
+                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                if _dash.exists():
+                    _open_dashboard(str(_dash))
             new_in_batch = current_findings - findings_before
             _print_batch_progress(
                 i, len(batches), len(batch),
@@ -1766,7 +1852,7 @@ def cmd_scan(args):
                     findings_count=new_findings,
                     scan_type="existing",
                     scope="wide",
-                    depth=getattr(args, '_depth', '1hop'),
+                    depth=getattr(args, '_depth', 'default'),
                     lens=getattr(args, '_lens', 'default'),
                 )
             except Exception:
@@ -1806,9 +1892,9 @@ def cmd_scan(args):
                 "--severity", getattr(args, 'severity', 'high'),
                 "--lang", getattr(args, 'lang', 'en'),
             ]
-            _depth = getattr(args, '_depth', '1hop')
+            _depth = getattr(args, '_depth', 'default')
             _lens = getattr(args, '_lens', 'default')
-            if _depth != "1hop":
+            if _depth != "default":
                 cmd.extend(["--depth", _depth])
             if _lens != "default":
                 cmd.extend(["--lens", _lens])
@@ -1823,10 +1909,19 @@ def cmd_scan(args):
                 cmd.append("--no-verify")
             if getattr(args, 'autofix', False):
                 cmd.append("--autofix")
-            result = subprocess.run(cmd, cwd=repo_path)
+            cmd.append("--no-open")  # parent controls browser open
+            try:
+                result = subprocess.run(cmd, cwd=repo_path, timeout=600)
+            except subprocess.TimeoutExpired:
+                print(f"  [warn] バッチ {i+1}/{len(batches)} がタイムアウト(10min)しました。スキップします。", file=sys.stderr)
+                continue
             if result.returncode == 1:
                 all_high += 1
             current_findings = _count_findings_on_disk(repo_path)
+            if i == 0 and current_findings > 0 and not getattr(args, 'no_open', False):
+                _dash = Path(repo_path) / ".delta-lint" / "findings" / "dashboard.html"
+                if _dash.exists():
+                    _open_dashboard(str(_dash))
             new_in_batch = current_findings - findings_before
             _print_batch_progress(
                 i, len(batches), len(batch),
@@ -1852,14 +1947,15 @@ def cmd_scan(args):
                     findings_count=new_findings,
                     scan_type="existing",
                     scope="smart",
-                    depth=getattr(args, '_depth', '1hop'),
+                    depth=getattr(args, '_depth', 'default'),
                     lens=getattr(args, '_lens', 'default'),
                 )
             except Exception:
                 pass
         sys.exit(1 if all_high > 0 else 0)
     else:
-        since_val = getattr(args, 'since', None) or "3months"
+        explicit_since = getattr(args, 'since', None)
+        since_val = explicit_since or _adaptive_since(repo_path, verbose=args.verbose)
         if args.verbose:
             print(f"Detecting changed files in {repo_path} (since={since_val})...", file=sys.stderr)
         from retrieval import get_recent_changed_files
@@ -1892,7 +1988,10 @@ def cmd_scan(args):
     if args.verbose:
         print(f"Building module context...", file=sys.stderr)
 
-    context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
+    _depth = getattr(args, '_depth', 'default')
+    _scope = getattr(args, '_scope', 'diff')
+    _hops = 3 if (_depth == 'deep' or _scope == 'pr') else 1
+    context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None), max_hops=_hops)
 
     if args.verbose:
         print(f"  Target files: {len(context.target_files)}", file=sys.stderr)
@@ -2000,7 +2099,7 @@ def cmd_scan(args):
         excluded_count = before_count - len(source_files)
         if excluded_count > 0:
             # Rebuild context without excluded files
-            context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None))
+            context = build_context(repo_path, source_files, retrieval_config=getattr(args, '_retrieval_config', None), doc_files=getattr(args, '_doc_files', None), max_hops=_hops)
             if args.verbose:
                 print(f"  Excluded {excluded_count} file(s) by policy exclude_paths", file=sys.stderr)
 
@@ -2247,6 +2346,8 @@ def cmd_scan(args):
                     recorded_findings += 1
                 except ValueError:
                     pass  # duplicate
+                except OSError as e:
+                    print(f"  [warn] finding保存失敗: {e}", file=sys.stderr)
             if recorded_findings > 0:
                 _treemap = None
                 _results_json = Path(repo_path) / ".delta-lint" / "stress-test" / "results.json"
@@ -2257,7 +2358,9 @@ def cmd_scan(args):
                     except Exception:
                         pass
                 _dash_tpl = getattr(args, "_dashboard_template", "")
-                generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
+                dash_path = generate_dashboard(repo_path, treemap_json=_treemap, dashboard_template=_dash_tpl)
+                if dash_path and not getattr(args, 'no_open', False):
+                    _open_dashboard(str(dash_path))
                 if args.verbose:
                     print(
                         f"  Recorded {recorded_findings} finding(s) to .delta-lint/findings/; "
@@ -2334,7 +2437,7 @@ def cmd_scan(args):
             if scope == "smart":
                 _scan_type = "existing"
             elif scope == "wide":
-                _scan_type = "deep" if getattr(args, '_depth', '1hop') == "graph" else "existing"
+                _scan_type = "deep" if getattr(args, '_depth', 'default') == "deep" else "existing"
             elif scope == "pr":
                 _scan_type = "existing"
             append_scan_history(
@@ -2345,7 +2448,7 @@ def cmd_scan(args):
                 finding_ids=scan_fids,
                 patterns_found=scan_patterns,
                 scope=scope,
-                depth=getattr(args, '_depth', '1hop'),
+                depth=getattr(args, '_depth', 'default'),
                 lens=getattr(args, '_lens', 'default'),
             )
         from findings import generate_dashboard as _gen_dash
@@ -2428,6 +2531,58 @@ def cmd_scan(args):
 # cmd_suppress
 # ---------------------------------------------------------------------------
 
+def _recover_existing_findings(repo_path: str, existing_json: Path) -> int:
+    """Recover findings from existing_findings.json into JSONL.
+
+    Called when init was interrupted: scan_existing wrote results to
+    existing_findings.json but the JSONL conversion loop didn't complete.
+    """
+    import json as _json
+    try:
+        data = _json.loads(existing_json.read_text(encoding="utf-8"))
+        results = data.get("results", [])
+        repo_name = Path(repo_path).name
+
+        from findings import Finding, generate_id, add_finding
+        saved = 0
+        for cluster in results:
+            for f in cluster.get("findings", []):
+                loc = f.get("location", {})
+                file_a = loc.get("file_a", "") if isinstance(loc, dict) else ""
+                file_b = loc.get("file_b", "") if isinstance(loc, dict) else ""
+                pattern = f.get("pattern", "")
+                title = f.get("contradiction", f.get("title", ""))[:120]
+                fid = generate_id(repo_name, file_a, title,
+                                  file_b=file_b, pattern=pattern)
+                try:
+                    from git_enrichment import enrich_finding
+                    enrich_finding(f, repo_path)
+                except Exception:
+                    pass
+                finding = Finding(
+                    id=fid,
+                    repo=repo_name,
+                    file=file_a,
+                    severity=f.get("severity", "medium"),
+                    pattern=pattern,
+                    title=title,
+                    description=f.get("impact", f.get("user_impact", "")),
+                    category=f.get("category", "contradiction"),
+                    found_by="delta-init (recovered)",
+                    churn_6m=f.get("churn_6m", 0),
+                    fan_out=f.get("fan_out", 0),
+                    total_lines=f.get("total_lines", 0),
+                )
+                try:
+                    add_finding(repo_path, finding)
+                    saved += 1
+                except ValueError:
+                    pass
+        return saved
+    except Exception:
+        return 0
+
+
 def cmd_view(args):
     """Open unified delta-lint dashboard in the browser.
 
@@ -2437,10 +2592,15 @@ def cmd_view(args):
     repo_path = Path(args.repo).resolve()
     delta_dir = repo_path / ".delta-lint"
 
+    # Auto-init: if .delta-lint/ doesn't exist, run scan automatically
     if not delta_dir.exists():
-        print("⚠ .delta-lint/ が見つかりません。", file=sys.stderr)
-        print("  先に delta init を実行してください。", file=sys.stderr)
-        sys.exit(1)
+        print("📡 データがないため、自動スキャンを開始します...", file=sys.stderr)
+        import subprocess as _sp_init
+        _sp_init.run(
+            [sys.executable, str(Path(__file__).resolve()), "scan",
+             "--repo", str(repo_path), "--no-open"],
+            cwd=str(repo_path),
+        )
 
     from findings import generate_dashboard
 
@@ -2451,10 +2611,73 @@ def cmd_view(args):
         treemap_json = build_treemap_json(str(results_path))
 
     has_findings = any((delta_dir / "findings").glob("*.jsonl")) if (delta_dir / "findings").exists() else False
-    if not has_findings and treemap_json is None:
-        print("⚠ データがありません。delta scan を実行してください。", file=sys.stderr)
-        sys.exit(1)
 
+    # Auto-recover: existing_findings.json exists but JSONL is empty
+    # (init was interrupted after scan_existing but before JSONL conversion)
+    if not has_findings:
+        existing_json = delta_dir / "stress-test" / "existing_findings.json"
+        if existing_json.exists():
+            recovered = _recover_existing_findings(str(repo_path), existing_json)
+            if recovered > 0:
+                print(f"🔄 中断された init から {recovered} 件の findings を復元しました。", file=sys.stderr)
+                has_findings = True
+
+    # Auto-scan: if no data after init/recovery, run a scan
+    if not has_findings and treemap_json is None:
+        print("📡 findings がないため、スキャンを実行します...", file=sys.stderr)
+        import subprocess as _sp_scan
+        _sp_scan.run(
+            [sys.executable, str(Path(__file__).resolve()), "scan",
+             "--repo", str(repo_path), "--no-open"],
+            cwd=str(repo_path),
+        )
+        # Re-check after scan
+        has_findings = any((delta_dir / "findings").glob("*.jsonl")) if (delta_dir / "findings").exists() else False
+        if results_path.exists():
+            from visualize import build_treemap_json as _btj
+            treemap_json = _btj(str(results_path))
+
+    # Auto-recover scan_history.jsonl from stress-test data if missing
+    scan_history_path = delta_dir / "scan_history.jsonl"
+    if not scan_history_path.exists():
+        _recovered_history = False
+        try:
+            from findings import append_scan_history
+            import json as _jh
+            # Recover from existing_findings.json
+            ef_path = delta_dir / "stress-test" / "existing_findings.json"
+            if ef_path.exists():
+                ef_data = _jh.loads(ef_path.read_text(encoding="utf-8"))
+                ef_results = ef_data.get("results", [])
+                ef_findings = sum(len(r.get("findings", [])) for r in ef_results if isinstance(r, dict))
+                ts = ef_data.get("metadata", {}).get("timestamp", "")
+                append_scan_history(
+                    str(repo_path),
+                    clusters=len(ef_results),
+                    findings_count=ef_findings,
+                    scan_type="existing",
+                    scope="smart", depth="default", lens="default",
+                )
+                _recovered_history = True
+            # Recover from results.json (stress test)
+            if results_path.exists():
+                r_data = _jh.loads(results_path.read_text(encoding="utf-8"))
+                r_results = r_data.get("results", [])
+                r_findings = sum(len(r.get("findings", [])) for r in r_results)
+                append_scan_history(
+                    str(repo_path),
+                    clusters=len(r_results),
+                    findings_count=r_findings,
+                    scan_type="stress",
+                    scope="wide", depth="default", lens="stress",
+                )
+                _recovered_history = True
+            if _recovered_history:
+                print("🔄 init データからスキャン履歴を復元しました。", file=sys.stderr)
+        except Exception:
+            pass
+
+    print("⏳ ダッシュボード生成中（スコアリング・git解析）...", file=sys.stderr, flush=True)
     _dash_tpl = getattr(args, '_dashboard_template', "")
     out = generate_dashboard(str(repo_path), treemap_json=treemap_json, dashboard_template=_dash_tpl)
     import subprocess as _sp
@@ -2676,13 +2899,16 @@ def _normalize_scan_axes(args):
     else:
         args._scope = "diff"
 
-    # Depth: --depth > --deep > default(1hop)
+    # Depth: --depth > --deep > pr auto-deep > default
+    _depth_aliases = {"graph": "deep", "1hop": "default"}
     if args.depth is not None:
-        args._depth = args.depth
+        args._depth = _depth_aliases.get(args.depth, args.depth)
     elif getattr(args, 'deep', False):
-        args._depth = "graph"
+        args._depth = "deep"
+    elif args._scope == "pr":
+        args._depth = "deep"
     else:
-        args._depth = "1hop"
+        args._depth = "default"
 
     # Lens: --lens > --full > default
     if args.lens is not None:
@@ -2796,9 +3022,9 @@ def main():
     )
     scan_parser.add_argument(
         "--depth", default=None,
-        choices=["1hop", "graph"],
-        help="Context depth: 1hop (import-based 1-hop deps, default), "
-             "graph (contract graph analysis via surface extraction).",
+        choices=["deep", "graph", "1hop"],
+        help="Context depth: default (direct imports only), "
+             "deep (follow transitive imports for deeper analysis).",
     )
     scan_parser.add_argument(
         "--lens", default=None,
@@ -2830,6 +3056,10 @@ def main():
         help="Skip auto-learning: don't update sibling_map.yml from findings.",
     )
     scan_parser.add_argument(
+        "--no-open", action="store_true", default=False,
+        help="Don't auto-open dashboard in browser after scan.",
+    )
+    scan_parser.add_argument(
         "--baseline", default=None,
         help="Baseline commit/ref for comparison. Only NEW findings (not in baseline) "
              "trigger exit code 1. Useful for gradual adoption on existing codebases.",
@@ -2856,7 +3086,7 @@ def main():
     )
     scan_parser.add_argument(
         "--deep", action="store_true", default=False,
-        help=argparse.SUPPRESS,  # hidden: use --depth graph
+        help=argparse.SUPPRESS,  # hidden: use --depth deep
     )
     scan_parser.add_argument(
         "--deep-workers", type=int, default=4,
@@ -3129,8 +3359,6 @@ def main():
             cmd_watch(args)
         elif args._lens == "stress":
             cmd_scan_full(args)
-        elif args._depth == "graph":
-            cmd_scan_deep(args)
         else:
             cmd_scan(args)
     elif args.command == "init":

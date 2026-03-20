@@ -48,7 +48,7 @@ ls {repo_path}/.delta-lint/stress-test/results.json 2>/dev/null
 **You MUST execute this Bash command right now:**
 
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python stress_test.py --repo "{repo_path}" --parallel 10 --verbose --visualize --max-wall-time 2400 2>&1
 ```
 
 Use `run_in_background: true` and `timeout: 600000`.
@@ -99,6 +99,190 @@ for c in constraints[:5]:
   この間、通常の作業を続けて大丈夫です。
   なにか確認したいことはありますか？
 ```
+
+## Step 2.15: 過去バグ履歴の収集 — BACKGROUND CONTEXT
+
+**structure.json の待ち時間を利用して、リポの過去バグ傾向を収集する。**
+この情報は `.delta-lint/bug_history.json` に保存し、以降のスキャン時にコンテキストとして活用する。
+
+```bash
+cd {repo_path} && python3 -c "
+import json, subprocess, os, re
+result = {}
+
+# 0. リモートURLからowner/repoを取得
+try:
+    remote = subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, text=True).stdout.strip()
+    repo_slug = '/'.join(remote.replace('.git','').split('/')[-2:])
+    if ':' in repo_slug:
+        repo_slug = repo_slug.split(':')[-1]
+    result['repo_slug'] = repo_slug
+except Exception:
+    repo_slug = ''
+
+    # 1. ラベル体系の把握 + 両方の経路で検索してマージ
+if repo_slug:
+    try:
+        labels_out = subprocess.run(
+            ['gh', 'label', 'list', '--repo', repo_slug, '--limit', '200', '--json', 'name'],
+            capture_output=True, text=True, timeout=15
+        )
+        all_labels = [l['name'] for l in json.loads(labels_out.stdout)] if labels_out.returncode == 0 else []
+        result['all_labels'] = all_labels
+
+        bug_pat = re.compile(r'bug|defect|regression|broken|error|crash|fault', re.I)
+        bug_labels = [l for l in all_labels if bug_pat.search(l)]
+        result['bug_labels'] = bug_labels
+
+        # 両方の経路で検索して URL で重複排除
+        seen_urls = set()
+        all_issues = []
+        all_prs = []
+
+        # 経路A: ラベル検索（各バグ系ラベルで）
+        for label in bug_labels[:3]:
+            try:
+                r = subprocess.run(
+                    ['gh', 'search', 'issues', '--repo', repo_slug, '--label', label,
+                     '--limit', '30', '--json', 'title,url,state,createdAt,labels'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if r.returncode == 0:
+                    for item in json.loads(r.stdout):
+                        if item['url'] not in seen_urls:
+                            seen_urls.add(item['url'])
+                            item['_source'] = 'label:' + label
+                            all_issues.append(item)
+            except Exception:
+                pass
+            try:
+                r = subprocess.run(
+                    ['gh', 'search', 'prs', '--repo', repo_slug, '--label', label,
+                     '--state', 'merged', '--limit', '20', '--json', 'title,url,mergedAt'],
+                    capture_output=True, text=True, timeout=10
+                )
+                if r.returncode == 0:
+                    for item in json.loads(r.stdout):
+                        if item['url'] not in seen_urls:
+                            seen_urls.add(item['url'])
+                            item['_source'] = 'label:' + label
+                            all_prs.append(item)
+            except Exception:
+                pass
+
+        # 経路B: タイトル検索（ラベルの有無に関係なく常にやる）
+        try:
+            r = subprocess.run(
+                ['gh', 'search', 'issues', '--repo', repo_slug, 'bug OR fix OR regression OR broken',
+                 '--limit', '50', '--json', 'title,url,state,createdAt,labels'],
+                capture_output=True, text=True, timeout=15
+            )
+            if r.returncode == 0:
+                for item in json.loads(r.stdout):
+                    if item['url'] not in seen_urls:
+                        seen_urls.add(item['url'])
+                        item['_source'] = 'title_search'
+                        all_issues.append(item)
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ['gh', 'search', 'prs', '--repo', repo_slug, 'fix OR bug OR regression OR revert',
+                 '--state', 'merged', '--limit', '30', '--json', 'title,url,mergedAt'],
+                capture_output=True, text=True, timeout=15
+            )
+            if r.returncode == 0:
+                for item in json.loads(r.stdout):
+                    if item['url'] not in seen_urls:
+                        seen_urls.add(item['url'])
+                        item['_source'] = 'title_search'
+                        all_prs.append(item)
+        except Exception:
+            pass
+
+        result['bug_issues'] = all_issues[:80]
+        result['bugfix_prs'] = all_prs[:50]
+
+        # ラベルカバレッジ: ラベル経路の件数 vs 全件数で信頼度を判定
+        label_hits = len([i for i in all_issues if i.get('_source','').startswith('label:')])
+        title_only = len([i for i in all_issues if i.get('_source') == 'title_search'])
+        result['label_coverage'] = {
+            'labeled': label_hits,
+            'title_only': title_only,
+            'total': len(all_issues),
+            'reliability': 'high' if label_hits > title_only else 'low' if label_hits < title_only * 0.3 else 'medium',
+        }
+    except Exception as e:
+        result['gh_error'] = str(e)
+
+# 2. git log: fix/revert/bug コミット（直近6ヶ月）
+try:
+    log = subprocess.run(
+        ['git', 'log', '--since=6 months', '--grep=fix\\|revert\\|bug', '-i',
+         '--format=%H|%s|%an|%ai', '--', '*.py', '*.ts', '*.js', '*.go', '*.rs', '*.java', '*.rb', '*.php'],
+        capture_output=True, text=True, timeout=15
+    )
+    commits = []
+    for line in log.stdout.strip().split('\n'):
+        if '|' in line:
+            parts = line.split('|', 3)
+            commits.append({'hash': parts[0][:8], 'subject': parts[1], 'author': parts[2], 'date': parts[3][:10]})
+    result['bugfix_commits'] = commits[:100]
+except Exception as e:
+    result['git_error'] = str(e)
+
+# 3. ファイル別バグ頻度
+try:
+    freq = subprocess.run(
+        ['git', 'log', '--since=6 months', '--grep=fix\\|revert\\|bug', '-i',
+         '--name-only', '--format='],
+        capture_output=True, text=True, timeout=15
+    )
+    from collections import Counter
+    files = [f.strip() for f in freq.stdout.split('\n') if f.strip()]
+    result['bugfix_hotfiles'] = [{'file': f, 'count': c} for f, c in Counter(files).most_common(20)]
+except Exception:
+    pass
+
+os.makedirs('.delta-lint', exist_ok=True)
+with open('.delta-lint/bug_history.json', 'w') as f:
+    json.dump(result, f, ensure_ascii=False, indent=2)
+bl = result.get('bug_labels', [])
+lc = result.get('label_coverage', {})
+n_issues = len(result.get('bug_issues', []))
+n_prs = len(result.get('bugfix_prs', []))
+n_commits = len(result.get('bugfix_commits', []))
+n_hotfiles = len(result.get('bugfix_hotfiles', []))
+print(f'bug_labels: {bl[:5] if bl else \"(なし)\"}')
+if lc:
+    print(f'label_coverage: labeled={lc.get(\"labeled\",0)}, title_only={lc.get(\"title_only\",0)}, reliability={lc.get(\"reliability\",\"?\")}'  )
+print(f'bug_issues: {n_issues}, bugfix_prs: {n_prs}, bugfix_commits: {n_commits}, hotfiles: {n_hotfiles}')
+if result.get('bugfix_hotfiles'):
+    print('Top bugfix files:')
+    for h in result['bugfix_hotfiles'][:5]:
+        print(f'  {h[\"file\"]} ({h[\"count\"]}回)')
+"
+```
+
+**結果がある場合、ユーザーに報告する:**
+
+```
+📋 過去バグ履歴:
+  ラベル体系: {bug_labels} / 信頼度: {reliability}
+    (high=ラベル運用が定着 / medium=混在 / low=ラベルほぼ未使用)
+  GitHub Issues: {n_issues} 件 (ラベル経由 {labeled}件 + タイトル検索 {title_only}件)
+  マージ済み bugfix PR: {n_prs} 件
+  bugfix コミット(6ヶ月): {n_commits} 件
+
+🔧 バグ修正が多いファイル TOP 5:
+  1. {file1} — {count1}回
+  2. {file2} — {count2}回
+  ...
+
+この情報を以降のスキャンで優先度判定に使います。
+```
+
+**gh コマンドが使えない（認証なし等）場合は git log のみで進める。エラーでブロックしない。**
 
 ## Step 2.2: 既存バグの表示 — CRITICAL UX STEP
 
@@ -186,59 +370,75 @@ for r in results:
 
 **ユーザーに「今どう？」と聞かせてはならない。** Step 2.5 と Step 3 を完了したら、stress-test 完了まで自動で進捗をポーリングし続ける。
 
-**ポーリングループ: 30秒ごとに results.json を読んで進捗報告する。** stress-test が完了するまで繰り返す。
+### ポーリング方法: 1回読み取りコマンドを繰り返し実行
 
+**重要: `while True` ループのフォアグラウンドコマンドは使わない。** 代わりに、1回で即座に終了するコマンドを自分のループで繰り返し呼ぶ。
+
+1回分のコマンド（即座に終了する）:
 ```bash
 cd {repo_path} && python3 -c "
-import json, os, time
+import json, os
 f='.delta-lint/stress-test/results.json'
-prev_count=0
-while True:
-    if os.path.exists(f):
-        try:
-            d=json.load(open(f))
-            results=d.get('results',[])
-            total=d.get('total_modifications', 0)
-            hits=[r for r in results if r.get('findings')]
-            count=len(results)
-            if count > prev_count:
-                pct=int(count*100/total) if total else 0
-                print(f'PROGRESS|{count}|{total}|{len(hits)}|{pct}')
-                for r in reversed(results):
-                    if r.get('findings'):
-                        f0=r['findings'][0]
-                        print(f'LATEST|{f0.get(\"pattern\",\"\")}|{f0.get(\"contradiction\",\"\")[:80]}')
-                        break
-                prev_count=count
-            if total and count>=total:
-                print('DONE')
+if not os.path.exists(f):
+    print('WAITING')
+else:
+    try:
+        d=json.load(open(f))
+        results=d.get('results',[])
+        total=d.get('metadata',{}).get('n_modifications',0)
+        hits=[r for r in results if r.get('findings')]
+        count=len(results)
+        status=d.get('metadata',{}).get('status','running')
+        pct=int(count*100/total) if total else 0
+        if total and count>=total:
+            print(f'DONE|{count}|{total}|{len(hits)}|{pct}')
+        elif status=='timeout':
+            print(f'TIMEOUT|{count}|{total}|{len(hits)}|{pct}')
+        else:
+            print(f'PROGRESS|{count}|{total}|{len(hits)}|{pct}')
+        for r in reversed(results):
+            if r.get('findings'):
+                f0=r['findings'][0]
+                print(f'LATEST|{f0.get(\"pattern\",\"\")}|{f0.get(\"contradiction\",\"\")[:80]}')
                 break
-        except: pass
-    time.sleep(30)
+    except: print('ERROR|read failed')
 "
 ```
 
-**このコマンドはフォアグラウンドで実行する（`run_in_background: false`）。** 30秒ごとに出力が来るので、それを読んでユーザーに報告する。
+### ポーリング手順（YOU が制御するループ）
 
-出力の解釈:
-- `PROGRESS|{done}|{total}|{hits}|{pct}` → 進捗報告
-- `LATEST|{pattern}|{contradiction}` → 最新の発見
-- `DONE` → 完了、Step 4 へ
+1. 上のコマンドを実行する（即座に結果が返る）
+2. 出力を読んでユーザーに中間報告する
+3. `DONE` or `TIMEOUT` が出たら → Step 4 へ
+4. それ以外 → **5分 sleep してから再度 1 に戻る**
+5. **最大8回**（= 40分）で打ち切り。途中結果で Step 4 へ
 
-報告フォーマット（30秒ごと）:
+**sleep コマンド例:**
+```bash
+sleep 300
+```
+
+### 中間報告フォーマット
+
+各ポーリングごとにユーザーに報告する:
 
 ```
 📡 [{pct}%] {done}/{total} スキャン完了 — {hits}件で矛盾検出
   最新: {pattern} — {contradiction の要約}
 ```
 
-**ユーザーが途中で別の質問をしたら、ポーリングを中断して対応してよい。** ただしストレステストはバックグラウンドで継続中なので、対応後にポーリングを再開するか、Step 4 の完了通知を待つ。
+### 注意事項
+
+- **ポーリングコマンドは即座に終了する** ので、ユーザーの質問にいつでも応答できる
+- ユーザーが途中で別の質問をしたら対応してよい。ストレステストはバックグラウンドで継続中
+- 対応後にポーリングを再開するか、Step 4 に進む
+- `TIMEOUT` の場合: 途中結果でも地雷マップは生成済み。「{done}/{total} 件まで完了。残りは `delta scan --lens stress` で再開可能」と報告
 
 ## Step 4: When stress-test completes
 
 When the background task notification arrives:
 1. Read the output file to get the summary
-2. Open the heatmap: `open {repo_path}/.delta-lint/stress-test/landmine_map.html`
+2. Open the dashboard: `open {repo_path}/.delta-lint/findings/dashboard.html`
 3. Report to user exactly this format (fill in actual data):
 
 ```

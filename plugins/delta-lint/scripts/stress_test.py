@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import time as _time
 from datetime import datetime
 from pathlib import Path
 
@@ -892,20 +893,29 @@ def scan_existing(
         if verbose:
             print(f"[step 0.5] Running {total} cluster scans with {parallel} workers", file=sys.stderr)
 
+        CLUSTER_TIMEOUT = 360
+
         results = [None] * total
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             futures = {
                 pool.submit(_scan_cluster, c, i, total, repo_path, backend, verbose, lang): i - 1
                 for i, c in enumerate(clusters, 1)
             }
-            for future in as_completed(futures):
+            for future in as_completed(futures, timeout=CLUSTER_TIMEOUT + 60):
                 idx = futures[future]
-                results[idx] = future.result()
+                try:
+                    results[idx] = future.result(timeout=CLUSTER_TIMEOUT)
+                except (TimeoutError, Exception) as exc:
+                    results[idx] = {"findings": [], "error": str(exc)}
+                    if verbose:
+                        print(f"[error] cluster {idx+1}/{total}: {exc}", file=sys.stderr)
 
-        return results
+        return [r if r is not None else {"findings": [], "error": "incomplete"} for r in results]
 
     # Streaming mode: yield results as each cluster completes
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    CLUSTER_TIMEOUT = 360
 
     if verbose:
         print(f"[step 0.5] Streaming {total} cluster scans with {parallel} workers", file=sys.stderr)
@@ -922,8 +932,13 @@ def scan_existing(
                 pool.submit(_scan_cluster, c, i, total, repo_path, backend, verbose, lang): i - 1
                 for i, c in enumerate(clusters, 1)
             }
-            for future in as_completed(futures):
-                result = future.result()
+            for future in as_completed(futures, timeout=CLUSTER_TIMEOUT + 60):
+                try:
+                    result = future.result(timeout=CLUSTER_TIMEOUT)
+                except (TimeoutError, Exception) as exc:
+                    result = {"findings": [], "error": str(exc)}
+                    if verbose:
+                        print(f"[error] cluster scan: {exc}", file=sys.stderr)
                 completed += 1
                 yield result, completed, total
 
@@ -1077,19 +1092,25 @@ def run_scans(
     backend: str = "cli",
     verbose: bool = False,
     parallel: int = 1,
+    on_result: "callable | None" = None,
 ) -> list[dict]:
     """Run scan on each virtual modification using existing detect engine.
 
     Args:
         parallel: Number of concurrent scans (default: 1 = sequential)
+        on_result: Optional callback(result, index) called after each scan completes.
+                   Enables incremental saving so partial progress survives interruptions.
     """
     total = len(modifications)
 
     if parallel <= 1:
-        return [
-            _scan_one(mod, i, total, repo_path, backend, verbose)
-            for i, mod in enumerate(modifications, 1)
-        ]
+        results = []
+        for i, mod in enumerate(modifications, 1):
+            r = _scan_one(mod, i, total, repo_path, backend, verbose)
+            results.append(r)
+            if on_result:
+                on_result(r, i - 1)
+        return results
 
     # Parallel execution via ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1097,17 +1118,30 @@ def run_scans(
     if verbose:
         print(f"[step 2] Running {total} scans with {parallel} workers", file=sys.stderr)
 
+    PER_SCAN_TIMEOUT = 360
+
     results = [None] * total
     with ThreadPoolExecutor(max_workers=parallel) as pool:
         futures = {
             pool.submit(_scan_one, mod, i, total, repo_path, backend, verbose): i - 1
             for i, mod in enumerate(modifications, 1)
         }
-        for future in as_completed(futures):
+        for future in as_completed(futures, timeout=PER_SCAN_TIMEOUT * total):
             idx = futures[future]
-            results[idx] = future.result()
+            try:
+                results[idx] = future.result(timeout=PER_SCAN_TIMEOUT)
+            except TimeoutError:
+                results[idx] = {"modification": modifications[idx], "findings": [], "error": "timeout"}
+                if verbose:
+                    print(f"[timeout] scan {idx+1}/{total} timed out after {PER_SCAN_TIMEOUT}s", file=sys.stderr)
+            except Exception as exc:
+                results[idx] = {"modification": modifications[idx], "findings": [], "error": str(exc)}
+                if verbose:
+                    print(f"[error] scan {idx+1}/{total}: {exc}", file=sys.stderr)
+            if on_result:
+                on_result(results[idx], idx)
 
-    return results
+    return [r if r is not None else {"modification": modifications[i], "findings": [], "error": "incomplete"} for i, r in enumerate(results)]
 
 
 # ---------------------------------------------------------------------------
@@ -1331,6 +1365,7 @@ def run_stress_test(
     lang: str = "en",
     structure: dict | None = None,
     skip_existing: bool = False,
+    max_wall_time: int = 2400,
 ) -> list[dict]:
     """Main entry point — autonomous adaptive stress-test.
 
@@ -1346,6 +1381,7 @@ def run_stress_test(
                    If provided, skips redundant structure analysis.
         skip_existing: If True, skip the scan_existing step (Step 0.5).
                        Use when caller already runs scan_existing in parallel.
+        max_wall_time: Maximum wall-clock seconds before graceful shutdown (default 2400 = 40min).
     """
     repo_path = str(Path(repo_path).resolve())
     if output_dir is None:
@@ -1377,19 +1413,59 @@ def run_stress_test(
         print(f"  Saved: {structure_path}", file=sys.stderr)
 
     # Step 0.5: Scan existing contradictions in hotspot clusters
+    existing_results: list[dict] = []
     if not skip_existing:
-        existing_results = [
-            result for result, _, _ in scan_existing(
-                structure, repo_path,
-                backend=backend, verbose=verbose, parallel=parallel, lang=lang,
-                stream=True,
-            )
-        ]
+        repo_name = Path(repo_path).name
+        n_saved_existing = 0
+        for result, completed, total in scan_existing(
+            structure, repo_path,
+            backend=backend, verbose=verbose, parallel=parallel, lang=lang,
+            stream=True,
+        ):
+            existing_results.append(result)
+            # Save each finding to JSONL immediately (survives interruption)
+            try:
+                from findings import Finding, generate_id, add_finding
+                for f in result.get("findings", []):
+                    loc = f.get("location", {})
+                    file_a = loc.get("file_a", "") if isinstance(loc, dict) else ""
+                    file_b = loc.get("file_b", "") if isinstance(loc, dict) else ""
+                    pattern = f.get("pattern", "")
+                    title = f.get("contradiction", f.get("title", ""))[:120]
+                    fid = generate_id(repo_name, file_a, title,
+                                      file_b=file_b, pattern=pattern)
+                    try:
+                        from git_enrichment import enrich_finding
+                        enrich_finding(f, repo_path)
+                    except Exception:
+                        pass
+                    finding = Finding(
+                        id=fid, repo=repo_name, file=file_a,
+                        severity=f.get("severity", "medium"),
+                        pattern=pattern, title=title,
+                        description=f.get("impact", f.get("user_impact", "")),
+                        category=f.get("category", "contradiction"),
+                        found_by="delta-init",
+                        churn_6m=f.get("churn_6m", 0),
+                        fan_out=f.get("fan_out", 0),
+                        total_lines=f.get("total_lines", 0),
+                    )
+                    try:
+                        add_finding(repo_path, finding)
+                        n_saved_existing += 1
+                    except ValueError:
+                        pass
+            except Exception:
+                pass
+
+        if verbose and n_saved_existing:
+            print(f"  [existing] {n_saved_existing} findings saved to JSONL", file=sys.stderr)
+
         existing_findings_path = out / "existing_findings.json"
         existing_data = {
             "metadata": {
                 "repo": repo_path,
-                "repo_name": Path(repo_path).name,
+                "repo_name": repo_name,
                 "timestamp": timestamp,
                 "n_clusters": len(existing_results),
             },
@@ -1439,14 +1515,30 @@ def run_stress_test(
     all_results: list[dict] = []
     pending = list(modifications)
     converged = False
+    _last_save_count = 0
+    _wall_start = _time.monotonic()
+
+    def _on_scan_result(result, idx):
+        nonlocal _last_save_count
+        all_results.append(result)
+        metadata["n_completed"] = len(all_results)
+        _save_results(out, all_results, metadata, verbose=False)
+        _last_save_count = len(all_results)
 
     while len(all_results) < n_modifications and not converged:
+        elapsed = _time.monotonic() - _wall_start
+        if elapsed > max_wall_time:
+            if verbose:
+                print(f"[wall-time] {elapsed:.0f}s elapsed (limit {max_wall_time}s). "
+                      f"Stopping with {len(all_results)}/{n_modifications} scans.", file=sys.stderr)
+            metadata["status"] = "timeout"
+            _save_results(out, all_results, metadata, verbose=False)
+            break
         # Take next batch from pending
         batch = pending[:BATCH_SIZE]
         pending = pending[BATCH_SIZE:]
 
         if not batch:
-            # No more pending — generate focused modifications on hotspots
             remaining = n_modifications - len(all_results)
             focus_n = min(BATCH_SIZE, remaining)
             if focus_n <= 0:
@@ -1459,19 +1551,20 @@ def run_stress_test(
                     print("[adaptive] No more modifications to generate. Stopping.", file=sys.stderr)
                 break
 
-        batch_results = run_scans(
+        pre_count = len(all_results)
+        run_scans(
             batch, repo_path, backend=backend, verbose=verbose, parallel=parallel,
+            on_result=_on_scan_result,
         )
-        all_results.extend(batch_results)
 
-        # Save checkpoint
-        metadata["n_completed"] = len(all_results)
-        _save_results(out, all_results, metadata, verbose)
+        if verbose:
+            added = len(all_results) - pre_count
+            total_findings = sum(len(r.get("findings", [])) for r in all_results)
+            print(f"  [batch] +{added} scans ({len(all_results)} total), {total_findings} findings", file=sys.stderr)
 
         if visualize:
             _update_heatmap(out, verbose)
 
-        # Check convergence
         if _check_convergence(all_results, verbose):
             converged = True
             if verbose:
@@ -1486,6 +1579,23 @@ def run_stress_test(
     n_covered = len(coverage.get("scanned_files", {}))
     n_total = len(_list_source_files(repo_path))
     coverage_pct = round(n_covered / max(n_total, 1) * 100)
+
+    # Record stress test in scan_history.jsonl
+    elapsed_sec = _time.monotonic() - _wall_start
+    try:
+        from findings import append_scan_history
+        append_scan_history(
+            repo_path,
+            clusters=len(all_results),
+            findings_count=total_findings,
+            duration_sec=elapsed_sec,
+            scan_type="stress",
+            scope="wide",
+            depth="default",
+            lens="stress",
+        )
+    except Exception:
+        pass
 
     if verbose:
         status = "converged" if converged else "completed"
@@ -1515,6 +1625,7 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", action="store_true", default=True, help="Generate HTML heatmap after scan (default: on)")
     parser.add_argument("--no-visualize", action="store_true", help="Disable HTML heatmap generation")
     parser.add_argument("--lang", default="en", choices=["en", "ja"], help="Output language for findings (default: en)")
+    parser.add_argument("--max-wall-time", type=int, default=2400, help="Max wall-clock seconds before graceful stop (default: 2400 = 40min)")
     parser.add_argument("--structure-only", action="store_true", help="Run only structure analysis (Step 0), then exit")
 
     args = parser.parse_args()
@@ -1546,6 +1657,7 @@ if __name__ == "__main__":
         parallel=args.parallel,
         visualize=args.visualize and not args.no_visualize,
         lang=args.lang,
+        max_wall_time=args.max_wall_time,
     )
 
     # Summary output

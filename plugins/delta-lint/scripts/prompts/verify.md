@@ -34,14 +34,18 @@ Respond with a JSON array. Each element corresponds to one input finding (same o
   {
     "index": 0,
     "verdict": "confirmed",
-    "confidence": 0.9,
-    "reason": "Brief explanation of why this is a real contradiction"
+    "confidence": 0.95,
+    "certainty": "definite",
+    "reason": "Brief explanation of why this is a real contradiction",
+    "reproducibility": "The contradiction is triggered by any Twitter-only simulation setup"
   },
   {
     "index": 1,
     "verdict": "rejected",
     "confidence": 0.85,
-    "reason": "The two functions handle different data types (Request vs Response) — not a shared contract"
+    "certainty": "uncertain",
+    "reason": "The two functions handle different data types (Request vs Response) — not a shared contract",
+    "reproducibility": null
   }
 ]
 ```
@@ -49,8 +53,13 @@ Respond with a JSON array. Each element corresponds to one input finding (same o
 Fields:
 - **index**: 0-based index matching the input finding array
 - **verdict**: `"confirmed"` or `"rejected"`
-- **confidence**: 0.0–1.0 (how sure you are)
+- **confidence**: 0.0–1.0 (how sure you are of the verdict)
+- **certainty**: Your assessment of the finding's reliability:
+  - `"definite"` — You can describe a specific, concrete scenario where this bug is triggered. The code path is reachable in normal usage and the contradiction is unambiguous.
+  - `"probable"` — The contradiction exists in the code but requires specific conditions (edge cases, particular configurations, race conditions) to manifest.
+  - `"uncertain"` — The finding is theoretically possible but you cannot confirm it would cause real problems in practice (design debt, dead code, theoretical inconsistency).
 - **reason**: One sentence explaining the verdict
+- **reproducibility**: (for confirmed findings) Describe the specific steps or conditions that trigger this bug. Set to `null` for rejected findings.
 
 ## Rules
 

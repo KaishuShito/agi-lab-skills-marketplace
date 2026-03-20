@@ -8,7 +8,7 @@
 | `--scope` | `diff` | Scan scope: `diff` (changed files), `pr` (all files changed since base branch — for PR review), `smart` (git history priority, batched), `wide` (entire codebase, batched) |
 | `--since` | `3months` | Time window for file selection. Works with `diff`/`smart`/`pr`. Examples: `3months`, `6months`, `1year`, `90days`, `2weeks`. Default `diff` covers 3 months of git history. |
 | `--base` | auto-detect | Base branch for `--scope pr` (default: `GITHUB_BASE_REF` or `origin/main`). Example: `--base origin/develop` |
-| `--depth` | `1hop` | Context depth: `1hop` (import-based 1-hop deps), `graph` (contract graph analysis via surface extraction) |
+| `--depth` | (直接依存) | Context depth: 指定なし (direct imports only), `deep` (follow transitive imports for deeper analysis) |
 | `--lens` | `default` | Detection lens: `default` (contradiction+debt patterns), `stress` (virtual modification stress-test), `security` (security-focused) |
 | `--profile` / `-p` | (none) | Scan profile: `deep`, `light`, `security`, or custom name from `.delta-lint/profiles/` |
 | `--files` | (git diff) | Specific files to scan |

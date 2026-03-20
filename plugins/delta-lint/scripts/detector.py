@@ -373,18 +373,34 @@ def detect(context: ModuleContext, repo_name: str = "",
     if backend == "cli" and not _cli_available():
         backend = "api"
 
-    if backend == "cli":
-        raw = _detect_cli(system_prompt, user_prompt)
-    elif anthropic is not None:
-        raw = _detect_anthropic_sdk(system_prompt, user_prompt, model)
-    elif req_lib is not None:
-        raw = _detect_requests(system_prompt, user_prompt, model)
-    else:
-        raise RuntimeError(
-            "No backend available. Install 'anthropic' package or ensure "
-            "'claude' CLI is on PATH."
-        )
+    import time as _time
+    max_retries = 2
+    raw = None
+    for attempt in range(max_retries + 1):
+        try:
+            if backend == "cli":
+                raw = _detect_cli(system_prompt, user_prompt)
+            elif anthropic is not None:
+                raw = _detect_anthropic_sdk(system_prompt, user_prompt, model)
+            elif req_lib is not None:
+                raw = _detect_requests(system_prompt, user_prompt, model)
+            else:
+                raise RuntimeError(
+                    "No backend available. Install 'anthropic' package or ensure "
+                    "'claude' CLI is on PATH."
+                )
+            break  # success
+        except Exception as exc:
+            if attempt < max_retries:
+                wait = 2 ** attempt  # 1s, 2s
+                import sys as _sys
+                print(f"  [retry] LLM call failed ({exc}), retrying in {wait}s... ({attempt+1}/{max_retries})", file=_sys.stderr)
+                _time.sleep(wait)
+            else:
+                raise  # exhausted retries
 
+    if raw is None:
+        return []
     findings = _parse_response(raw)
 
     # Filter out disabled patterns
@@ -423,7 +439,7 @@ def _detect_cli(system_prompt: str, user_prompt: str) -> str:
 def _detect_anthropic_sdk(system_prompt: str, user_prompt: str, model: str) -> str:
     """Call Claude via the official Anthropic SDK."""
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key, timeout=300.0) if api_key else anthropic.Anthropic(timeout=300.0)
     message = client.messages.create(
         model=model,
         max_tokens=4096,

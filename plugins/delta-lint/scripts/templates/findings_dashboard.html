@@ -125,12 +125,28 @@ tailwind.config = {
     <div class="bg-surface-2 border border-surface-3 rounded-lg px-4 py-2.5 min-w-[100px] text-center">
       <div class="text-2xl font-bold text-accent">$scan_grade</div>
       <div class="text-[11px] text-txt-muted font-semibold mt-0.5">スキャン深度</div>
-      <div class="text-[10px] text-txt-dim mt-0.5">$scan_cells_done/$scan_cells_totalセル · $scan_count回</div>
+      <div class="text-[10px] text-txt-dim mt-0.5">コマンド一覧で詳細確認</div>
     </div>
   </div>
 
   <!-- ══ Findings Panel (default) ══ -->
   <div class="nav-panel flex flex-col flex-1 min-h-0" id="panel-findings">
+    <div class="px-6 py-4 shrink-0 border-b border-surface-3">
+      <h2 class="text-lg font-bold text-txt-bright">検出結果</h2>
+      <p class="text-[11px] text-txt-dim mt-1">構造矛盾や技術的負債を一覧表示。フィルタやソートで優先度の高い問題を確認できます。</p>
+    </div>
+    <!-- Kind tabs -->
+    <div class="flex border-b border-surface-3 shrink-0 bg-surface-1">
+      <div class="findings-kind-tab px-6 py-3 text-[12px] font-semibold cursor-pointer border-b-2 border-transparent text-txt-dim hover:text-txt-muted transition-all active text-accent !border-accent" data-kind="scan">
+        構造矛盾 <span class="ml-1.5 text-[10px] font-normal text-txt-dim" id="scan-count">0</span>
+      </div>
+      <div class="findings-kind-tab px-6 py-3 text-[12px] font-semibold cursor-pointer border-b-2 border-transparent text-txt-dim hover:text-txt-muted transition-all" data-kind="stress">
+        ストレステスト <span class="ml-1.5 text-[10px] font-normal text-txt-dim" id="stress-count">0</span>
+      </div>
+      <div class="findings-kind-tab px-6 py-3 text-[12px] font-semibold cursor-pointer border-b-2 border-transparent text-txt-dim hover:text-txt-muted transition-all" data-kind="security">
+        セキュリティ <span class="ml-1.5 text-[10px] font-normal text-txt-dim" id="security-count">0</span>
+      </div>
+    </div>
     <div class="flex items-center gap-3 px-6 pt-2 pb-1 shrink-0">
       <div class="flex rounded-lg border border-surface-3 overflow-hidden" id="open-closed-toggle"></div>
     </div>
@@ -141,11 +157,10 @@ tailwind.config = {
             <thead>
               <tr>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="id">ID <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
-                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="category">分類 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
+                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="category">確度 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt sorted" data-col="severity">重大度 <span class="sort-arrow ml-1 opacity-100 text-link">&#9660;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="title">内容 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="file">ファイル <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
-                <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="status">ステータス <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
                 <th class="bg-surface-2 text-txt-muted font-semibold uppercase text-[11px] tracking-wider px-3 py-2.5 text-left border-b border-surface-3 cursor-pointer select-none whitespace-nowrap sticky top-0 z-[2] hover:text-txt" data-col="roi_score">技術的負債 <span class="sort-arrow ml-1 opacity-40">&#9650;</span></th>
               </tr>
             </thead>
@@ -164,6 +179,10 @@ tailwind.config = {
 
   <!-- ══ Landmine Map Panel ══ -->
   <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-landmine">
+    <div class="px-6 py-4 shrink-0 border-b border-surface-3">
+      <h2 class="text-lg font-bold text-txt-bright">地雷マップ</h2>
+      <p class="text-[11px] text-txt-dim mt-1">ファイルごとのリスクスコアを可視化。リスクの高いファイルを優先的に確認できます。</p>
+    </div>
     <div class="hidden items-center gap-2 px-4 py-2 bg-blue-50 border-b border-blue-200 text-[11px] text-blue-700 shrink-0" id="lm-simple-banner">
       <svg class="w-3.5 h-3.5 shrink-0 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
       findings ベースの簡易表示です。<code class="bg-blue-100 px-1.5 py-0.5 rounded text-[10px] mx-1">delta scan --full</code> でより正確な地雷マップを生成できます。
@@ -234,8 +253,11 @@ tailwind.config = {
 
   <!-- ══ Coverage Matrix Panel ══ -->
   <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-coverage">
+    <div class="px-6 py-4 shrink-0 border-b border-surface-3">
+      <h2 class="text-lg font-bold text-txt-bright">コマンド一覧</h2>
+      <p class="text-[11px] text-txt-dim mt-1">スキャンの実行状況を確認し、未実行のコマンドをコピーして実行できます。</p>
+    </div>
     <div class="px-6 py-6 overflow-y-auto flex-1 text-[13px] leading-relaxed text-txt">
-      <h2 class="text-lg font-bold mb-4">コマンド一覧</h2>
 
       <!-- 統合カバレッジマトリクス: 行=広さ×深さ, 列=質 -->
       <div>
@@ -256,7 +278,7 @@ tailwind.config = {
 
         <p class="text-txt-muted text-xs mt-6 mb-4">
           delta scan は <strong>広さ</strong>（対象ファイル）× <strong>深さ</strong>（依存の辿り方）× <strong>質</strong>（検出手法）の3軸で構成されます。<br>
-          各軸を独立に指定できます: <code class="bg-surface-2 px-1.5 py-0.5 rounded">delta scan --scope wide --depth graph --lens security</code>
+          各軸を独立に指定できます: <code class="bg-surface-2 px-1.5 py-0.5 rounded">delta scan --scope wide --depth deep --lens security</code>
         </p>
 
         <!-- 軸の説明 -->
@@ -273,8 +295,8 @@ tailwind.config = {
           <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
             <h4 class="font-bold text-xs mb-2" style="color:#60a5fa">深さ (--depth)</h4>
             <div class="space-y-1.5 text-[11px]">
-              <div><code class="bg-surface-1 px-1 rounded">1hop</code> <span class="text-txt-muted">直接の依存のみ（デフォルト）</span></div>
-              <div><code class="bg-surface-1 px-1 rounded">graph</code> <span class="text-txt-muted">構造グラフで全体解析</span></div>
+              <div>指定なし <span class="text-txt-muted">直接の依存のみ（デフォルト）</span></div>
+              <div><code class="bg-surface-1 px-1 rounded">deep</code> <span class="text-txt-muted">依存の依存まで辿り根本から影響範囲を解析</span></div>
             </div>
           </div>
           <div class="bg-surface-2 border border-surface-3 rounded-lg p-3">
@@ -292,8 +314,11 @@ tailwind.config = {
 
   <!-- ══ Scoring Logic Panel ══ -->
   <div class="nav-panel hidden flex-col flex-1 min-h-0" id="panel-scoring">
+    <div class="px-6 py-4 shrink-0 border-b border-surface-3">
+      <h2 class="text-lg font-bold text-txt-bright">計算ロジック</h2>
+      <p class="text-[11px] text-txt-dim mt-1">技術的負債や情報量スコアの算出方法を説明。設定ファイルでカスタマイズ可能です。</p>
+    </div>
     <div class="px-6 py-6 overflow-y-auto flex-1 text-[13px] leading-relaxed text-txt">
-      <h2 class="text-lg font-bold mb-4">計算ロジック</h2>
 
       <div class="space-y-6">
         <!-- 技術的負債 -->
@@ -314,6 +339,17 @@ tailwind.config = {
           </table>
         </div>
 
+        <!-- 確度 -->
+        <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
+          <h3 class="font-bold text-link mb-2">確度 (Certainty) — ダブルチェック制</h3>
+          <p class="text-txt-muted text-xs mb-2">検出LLM（1体目）と検証LLM（2体目）の2段階判定で決定。単独の判定では「確定バグ」にならない。</p>
+          <table class="w-full text-xs mt-2">
+            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28 text-link">確定バグ</td><td>検出が high severity かつ 検証が definite + confidence ≥ 0.85</td></tr>
+            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold text-sev-medium">推定</td><td>検証が definite/probable + confidence ≥ 0.6</td></tr>
+            <tr><td class="py-1.5 font-semibold" style="color:#ffa502">未確認</td><td>上記以外（検証未実施、低confidence、構造的脆弱性）</td></tr>
+          </table>
+        </div>
+
         <!-- 文脈スコア -->
         <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
           <h3 class="font-bold mb-2" style="color:#60a5fa">文脈スコア (Context Score)</h3>
@@ -329,14 +365,13 @@ tailwind.config = {
 
         <!-- 情報量 -->
         <div class="bg-surface-2 border border-surface-3 rounded-lg p-4">
-          <h3 class="font-bold mb-2" style="color:#e879f9">情報量 (Information Score)</h3>
-          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">info_score = surprise × (1 + entropy) × log₂(1 + fan_out) / fix_cost × 100</code>
+          <h3 class="font-bold mb-2" style="color:#e879f9">情報量（新規性 × 集中度）(Information Score)</h3>
+          <code class="block bg-surface-1 rounded px-3 py-2 text-xs font-mono mb-3">info_score = discovery_value × concentration_factor × 100</code>
           <table class="w-full text-xs mt-2">
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28">surprise</td><td>-log₂ P(violation) — 稀なパターンほど高い（0〜1.0）</td></tr>
-            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold">entropy</td><td>ファイルの変異率からバイナリエントロピー（0〜1.0）</td></tr>
-            <tr><td class="py-1.5 font-semibold">fan_out</td><td>対数スケール: log₂(1 + fan_out)</td></tr>
+            <tr class="border-b border-surface-3"><td class="py-1.5 font-semibold w-28">discovery_value</td><td>同パターン件数 n から 1/√n — リポ内で初めてのパターンほど高い（新規性）</td></tr>
+            <tr><td class="py-1.5 font-semibold">concentration_factor</td><td>同ファイルの未解決件数 m から log₂(1+m) — ホットスポットほど高い</td></tr>
           </table>
-          <p class="text-txt-muted text-xs mt-2">情報理論ベースの客観的指標。チーム設定に影響されない。</p>
+          <p class="text-txt-muted text-xs mt-2">同一リポ内の finding 分布から算出。依存・伝播は文脈スコア（fan_out）側。チーム設定に影響されない。</p>
         </div>
 
         <!-- カスタマイズ -->
@@ -751,10 +786,24 @@ if (isSimpleMode) {
 // Findings Panel
 // ══════════════════════════════════════
 let showClosed = false;  // GitHub-style: Open by default
+let activeKindTab = "scan"; // "scan" | "stress" | "security"
 let sortCol = "severity";
 let sortAsc = false;
 const sevOrder = {high: 0, medium: 1, low: 2};
 const CLOSED_STATUSES = new Set(["merged", "wontfix", "false_positive", "duplicate", "rejected"]);
+function getKind(f) {
+  // Determine by lens (scan method): default → "scan", stress → "stress", security → "security"
+  // Fallback: use found_by for backward compatibility
+  let lens = f.lens;
+  if (!lens) {
+    if (f.found_by === 'stress-test') lens = 'stress';
+    else if (f.found_by === 'security' || (f.tags || []).includes('security')) lens = 'security';
+    else lens = 'default';
+  }
+  if (lens === 'stress') return 'stress';
+  if (lens === 'security') return 'security';
+  return 'scan'; // default lens
+}
 
 // Open/Closed toggle (GitHub-style)
 (function initOpenClosedToggle() {
@@ -786,6 +835,30 @@ const CLOSED_STATUSES = new Set(["merged", "wontfix", "false_positive", "duplica
   el.appendChild(closedBtn);
 })();
 
+// Kind tabs (Scan / Stress / Security)
+(function initKindTabs() {
+  const scanCount = FINDINGS.filter(f => getKind(f) === 'scan').length;
+  const stressCount = FINDINGS.filter(f => getKind(f) === 'stress').length;
+  const securityCount = FINDINGS.filter(f => getKind(f) === 'security').length;
+  
+  document.getElementById("scan-count").textContent = scanCount;
+  document.getElementById("stress-count").textContent = stressCount;
+  document.getElementById("security-count").textContent = securityCount;
+  
+  document.querySelectorAll(".findings-kind-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      activeKindTab = tab.dataset.kind;
+      document.querySelectorAll(".findings-kind-tab").forEach(t => {
+        t.classList.remove("active", "text-accent", "!border-accent");
+        t.classList.add("text-txt-dim", "border-transparent");
+      });
+      tab.classList.add("active", "text-accent", "!border-accent");
+      tab.classList.remove("text-txt-dim", "border-transparent");
+      render();
+    });
+  });
+})();
+
 
 document.querySelectorAll("#findings-table thead th").forEach(th => {
   th.onclick = () => {
@@ -804,7 +877,7 @@ document.querySelectorAll("#findings-table thead th").forEach(th => {
   };
 });
 
-function isConfirmed(f) { return f.verified || f.type === "bug"; }
+function isConfirmed(f) { return f.status === 'verified'; }
 function isInvestigating(f) {
   const resolved = new Set(["merged","wontfix","duplicate","rejected"]);
   return !isConfirmed(f) && !resolved.has(f.status || "found");
@@ -815,6 +888,7 @@ function render() {
     const status = f.status || "found";
     const isClosed = CLOSED_STATUSES.has(status);
     if (showClosed !== isClosed) return false;
+    if (getKind(f) !== activeKindTab) return false;
     return true;
   });
   data.sort((a, b) => {
@@ -822,9 +896,15 @@ function render() {
     if (sortCol === "severity") { va = sevOrder[va] ?? 9; vb = sevOrder[vb] ?? 9; }
     if (sortCol === "debt_score" || sortCol === "churn" || sortCol === "fan_out" || sortCol === "roi_score") { va = parseFloat(va) || 0; vb = parseFloat(vb) || 0; }
     if (sortCol === "category") {
-      const certOrder = {definite:0, probable:1, uncertain:2};
-      const getCert = f => (f.taxonomies||{}).certainty || (isConfirmed(f)?'definite':'uncertain');
-      va = certOrder[getCert(a)] ?? 3; vb = certOrder[getCert(b)] ?? 3;
+      const statusRank = {verified:0, merged:1, submitted:2, false_positive:5};
+      const certRank = {definite:0, probable:1, uncertain:2};
+      const getRank = f => {
+        const st = f.status || 'found';
+        if (st in statusRank) return statusRank[st];
+        const cert = (f.taxonomies||{}).certainty || 'uncertain';
+        return 3 + (certRank[cert] ?? 2);
+      };
+      va = getRank(a); vb = getRank(b);
     }
     if (va < vb) return sortAsc ? -1 : 1;
     if (va > vb) return sortAsc ? 1 : -1;
@@ -851,27 +931,19 @@ function render() {
     else if (status === 'false_positive') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-txt-muted/15 text-txt-muted line-through">FP</span>';
     else if (status === 'submitted') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sev-medium/15 text-sev-medium">提出済み</span>';
     else if (status === 'merged') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-green-400/15 text-green-400">修正済み</span>';
-    // Certainty badge (LLM judgment) — only shown if no human status override
-    else if (certainty === 'definite' || isConfirmed(f)) catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-link/15 text-link">検出</span>';
+    else if (certainty === 'definite') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-link/15 text-link">確定バグ</span>';
     else if (certainty === 'probable') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sev-medium/15 text-sev-medium">推定</span>';
-    else if (certainty === 'uncertain') catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#ffa502]/12 text-[#ffa502]">未確認</span>';
     else catBadge += '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#ffa502]/12 text-[#ffa502]">未確認</span>';
-    // Category badge (source type)
-    if (cat.startsWith('deep:')) catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-pat/10 text-pat">'+esc(cat.replace('deep:',''))+'</span>';
-    else if (cat === 'contradiction') catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-link/10 text-link">矛盾</span>';
-    else if (cat) catBadge += ' <span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-sev-low/15 text-txt-muted">'+esc(cat)+'</span>';
     const sevBg = sev==='high'?'bg-sev-high/15 text-sev-high':sev==='medium'?'bg-sev-medium/15 text-sev-medium':'bg-sev-low/15 text-sev-low';
-    const statusColors = {found:'bg-link/15 text-link',verified:'bg-green-400/15 text-green-400',false_positive:'bg-txt-muted/15 text-txt-muted',submitted:'bg-sev-medium/15 text-sev-medium',merged:'bg-green-400/15 text-green-400',rejected:'bg-sev-high/15 text-sev-high',wontfix:'bg-sev-low/15 text-sev-low',duplicate:'bg-sev-low/15 text-sev-low'};
-    const statusCls = statusColors[status] || 'bg-link/15 text-link';
     const roiColor = f.roi_score>=500?'text-sev-high':f.roi_score>=100?'text-sev-medium':'text-txt-muted';
     const fid = esc(f.id || '');
+    const fidShort = fid.includes('-') ? fid.slice(fid.lastIndexOf('-')+1) : fid.slice(0,12);
     return '<tr class="border-b border-surface-3 hover:bg-surface-2 transition-colors cursor-pointer" data-idx="'+idx+'" onclick="showDetail('+idx+')">'
-      +'<td class="px-3 py-2.5 align-top font-mono text-[10px] text-txt-dim cursor-copy" title="クリックでコピー: '+fid+'" onclick="event.stopPropagation();navigator.clipboard.writeText(\''+fid+'\');this.style.color=\'#0a7d5a\';setTimeout(()=>this.style.color=\'\',600)">'+fid.slice(0,12)+'</td>'
+      +'<td class="px-3 py-2.5 align-top font-mono text-[10px] text-txt-dim cursor-pointer hover:text-link transition-colors" title="'+fid+'" onclick="event.stopPropagation();navigator.clipboard.writeText(\''+fid+'\');const _t=this;_t.dataset.orig=_t.textContent;_t.textContent=\'Copied!\';_t.style.color=\'#0a7d5a\';setTimeout(()=>{_t.textContent=_t.dataset.orig;_t.style.color=\'\'},800)">'+fidShort+'</td>'
       +'<td class="px-3 py-2.5 align-top">'+catBadge+'</td>'
       +'<td class="px-3 py-2.5 align-top"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase '+sevBg+'">'+sev+'</span></td>'
       +'<td class="px-3 py-2.5 align-top max-w-[400px] truncate" title="'+esc(f.title||'')+'">'+titleText+'</td>'
       +'<td class="px-3 py-2.5 align-top font-mono text-xs text-file" title="'+esc(loc)+'">'+esc(shortFile)+'</td>'
-      +'<td class="px-3 py-2.5 align-top"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium '+statusCls+'">'+status+'</span></td>'
       +'<td class="px-3 py-2.5 align-top font-mono text-right font-bold '+roiColor+'" title="churn='+((f.churn||0))+ ' fan_out='+(f.fan_out||0)+' user_facing='+(f.user_facing_weight||1.0)+'x age='+(f.age_multiplier||1.0)+'x">'+(f.roi_score!=null?f.roi_score.toFixed(0):'-')+'</td>'
       +'</tr>';
   }).join("");
@@ -1035,8 +1107,10 @@ function renderTradeoffs() {
     const approver = s.approved_by
       ? '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-400/15 text-green-400">'+esc(s.approved_by)+'</span>'
       : '<span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium bg-sev-high/15 text-sev-high">未承認</span>';
+    const sid = esc(s.id||'');
+    const sidShort = sid.includes('-') ? sid.slice(sid.lastIndexOf('-')+1) : sid;
     return '<tr class="border-b border-surface-3 hover:bg-surface-2 transition-colors">'
-      +'<td class="px-3 py-2.5 font-mono text-txt-muted text-[11px]">'+esc(s.id||'')+'</td>'
+      +'<td class="px-3 py-2.5 font-mono text-txt-muted text-[11px]" title="'+sid+'">'+sidShort+'</td>'
       +'<td class="px-3 py-2.5"><span class="font-mono text-[11px] text-pat">'+esc(s.pattern||'')+'</span></td>'
       +'<td class="px-3 py-2.5 font-mono text-xs text-file">'+esc(files)+'</td>'
       +'<td class="px-3 py-2.5"><span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold '+wtCls+'">'+(wtLabels[wt]||wt)+'</span></td>'
@@ -1055,93 +1129,153 @@ function renderTradeoffs() {
   if (!COVERAGE_MATRIX) return;
   const cells = COVERAGE_MATRIX.cells || [];
 
-  // --- Flow section ---
-  // --- Unified matrix: rows = scope × depth, cols = lens ---
-  const lenses = ["default", "stress", "security"];
+  // --- Matrix: rows = scope, cols = default depth + deep depth ---
   const scopes = ["diff", "pr", "smart", "wide"];
-  const depths = ["1hop", "graph"];
-
-  // Build row keys: scope × depth
-  const rowKeys = [];
-  scopes.forEach(s => {
-    depths.forEach(d => {
-      rowKeys.push({scope: s, depth: d});
-    });
-  });
 
   const table = document.getElementById("coverage-matrix");
   if (!table) return;
   const thead = table.querySelector("thead tr");
   const tbody = table.querySelector("tbody");
 
-  // Header: [広さ × 深さ] + 3 lens columns
-  thead.innerHTML = '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-left border border-surface-3">広さ × 深さ</th>';
-  lenses.forEach(l => {
-    const lensLabel = cells.find(c => c.lens === l)?.lens_label || l;
-    thead.innerHTML += '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-center border border-surface-3">' + esc(lensLabel) + '</th>';
-  });
+  thead.innerHTML = '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-left border border-surface-3">スキャン対象</th>'
+    + '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-center border border-surface-3">通常</th>'
+    + '<th class="bg-surface-2 text-txt-muted font-semibold text-[10px] tracking-wider px-3 py-2 text-center border border-surface-3">深層</th>';
 
-  // Scope group labels for separator rows
   const scopeGroupLabels = {
     "diff": "デグレ検知（フロー型）",
     "pr": "PRレビュー（フロー型）",
     "smart": "コードベース診断（ストック型）",
+    "wide": "全ファイルスキャン（ストック型）",
   };
 
   tbody.innerHTML = "";
   let doneCount = 0;
-  const totalCount = rowKeys.length * lenses.length; // 24
 
-  let prevScope = null;
-  rowKeys.forEach(rk => {
-    // Insert scope group separator
-    if (rk.scope !== prevScope) {
-      if (scopeGroupLabels[rk.scope]) {
-        const isFlow = rk.scope === "diff" || rk.scope === "pr";
-        const dotColor = isFlow ? "bg-link" : "bg-accent";
-        tbody.innerHTML += '<tr><td colspan="4" class="px-3 py-2 border border-surface-3 bg-surface-1 text-[11px] font-semibold">'
-          + '<span class="w-2 h-2 rounded-full ' + dotColor + ' inline-block mr-1.5 align-middle"></span>'
-          + scopeGroupLabels[rk.scope]
-          + '</td></tr>';
-      }
-      prevScope = rk.scope;
+  function makeCopyIcon() {
+    return '<svg class="w-3 h-3 inline-block opacity-40 group-hover:opacity-80 transition-opacity shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" stroke-width="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke-width="2"/></svg>';
+  }
+  function makeCopyHandler(cmd) {
+    return 'onclick="navigator.clipboard.writeText(\'' + cmd.replace(/'/g, "\\'") + '\');var m=this.querySelector(\'.copy-msg\');m.style.visibility=\'visible\';setTimeout(function(){m.style.visibility=\'hidden\'},1500)"';
+  }
+  function renderCell(cell) {
+    var ci = makeCopyIcon();
+    var ch = makeCopyHandler(cell.command);
+    if (cell.count > 0) {
+      doneCount++;
+      return '<td class="group px-3 py-2.5 text-center border border-surface-3 bg-accent/5 cursor-pointer hover:bg-accent/10 transition-colors" ' + ch + '>'
+        + '<div class="flex items-center justify-center gap-1">'
+        + '<span class="w-2 h-2 rounded-full bg-accent inline-block"></span>'
+        + '<span class="font-bold text-accent">' + cell.count + '回</span></div>'
+        + '<div class="text-[10px] text-txt-dim mt-0.5">' + esc(cell.last_run) + '</div>'
+        + '<div class="flex items-center justify-center gap-1 mt-0.5">' + ci + '<code class="bg-surface-1 px-1 py-0.5 rounded text-[9px] text-txt-dim">' + esc(cell.command) + '</code></div>'
+        + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></td>';
+    }
+    return '<td class="group px-3 py-2.5 text-center border border-surface-3 bg-surface-2 cursor-pointer hover:bg-surface-3 transition-colors" ' + ch + '>'
+      + '<div class="text-txt-dim text-[10px] mb-1">未実行</div>'
+      + '<div class="flex items-center justify-center gap-1">' + ci + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] text-txt-muted">' + esc(cell.command) + '</code></div>'
+      + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></td>';
+  }
+
+  // --- Main matrix: one row per scope, two columns (default + deep) ---
+  scopes.forEach(scope => {
+    const groupLabel = scopeGroupLabels[scope];
+    if (groupLabel) {
+      const isFlow = scope === "diff" || scope === "pr";
+      const dotColor = isFlow ? "bg-link" : "bg-accent";
+      tbody.innerHTML += '<tr><td colspan="3" class="px-3 py-2 border border-surface-3 bg-surface-1 text-[11px] font-semibold">'
+        + '<span class="w-2 h-2 rounded-full ' + dotColor + ' inline-block mr-1.5 align-middle"></span>'
+        + groupLabel
+        + '</td></tr>';
     }
 
-    const scopeLabel = cells.find(c => c.scope === rk.scope)?.scope_label || rk.scope;
-    const depthLabel = cells.find(c => c.depth === rk.depth)?.depth_label || rk.depth;
-    let row = '<tr><td class="px-3 py-2.5 text-[11px] border border-surface-3 bg-surface-1">'
-      + '<span class="font-semibold">' + esc(scopeLabel) + '</span>'
-      + '<span class="text-txt-dim mx-1">×</span>'
-      + '<span class="text-txt-muted">' + esc(depthLabel) + '</span></td>';
+    const scopeLabel = cells.find(c => c.scope === scope)?.scope_label || scope;
 
-    lenses.forEach(l => {
-      const cell = cells.find(c => c.scope === rk.scope && c.depth === rk.depth && c.lens === l);
-      if (!cell) {
-        row += '<td class="px-3 py-2.5 text-center border border-surface-3 bg-surface-1 text-txt-dim text-[10px]">—</td>';
-        return;
-      }
-      var copyIcon = '<svg class="w-3 h-3 inline-block opacity-40 group-hover:opacity-80 transition-opacity shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" stroke-width="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke-width="2"/></svg>';
-      var copyHandler = 'onclick="navigator.clipboard.writeText(\'' + cell.command.replace(/'/g, "\\'") + '\');var m=this.querySelector(\'.copy-msg\');m.style.visibility=\'visible\';setTimeout(function(){m.style.visibility=\'hidden\'},1500)"';
-      if (cell.count > 0) {
+    if (scope === "pr") {
+      const prCell = cells.find(c => c.scope === "pr" && c.depth === "deep" && c.lens === "default");
+      const ci = makeCopyIcon();
+      const cmd = "delta scan --scope pr";
+      const ch = makeCopyHandler(cmd);
+      let row = '<tr><td class="px-3 py-2.5 text-[11px] border border-surface-3 bg-surface-1 font-semibold">' + esc(scopeLabel) + '</td>';
+      if (prCell && prCell.count > 0) {
         doneCount++;
-        row += '<td class="group px-3 py-2.5 text-center border border-surface-3 bg-accent/5 cursor-pointer hover:bg-accent/10 transition-colors" ' + copyHandler + '>'
+        row += '<td colspan="2" class="group px-3 py-2.5 text-center border border-surface-3 bg-accent/5 cursor-pointer hover:bg-accent/10 transition-colors" ' + ch + '>'
           + '<div class="flex items-center justify-center gap-1">'
           + '<span class="w-2 h-2 rounded-full bg-accent inline-block"></span>'
-          + '<span class="font-bold text-accent">' + cell.count + '回</span></div>'
-          + '<div class="text-[10px] text-txt-dim mt-0.5">' + esc(cell.last_run) + '</div>'
-          + '<div class="flex items-center justify-center gap-1 mt-0.5">' + copyIcon + '<code class="bg-surface-1 px-1 py-0.5 rounded text-[9px] text-txt-dim">' + esc(cell.command) + '</code></div>'
+          + '<span class="font-bold text-accent">' + prCell.count + '回</span>'
+          + '<span class="text-[9px] text-txt-dim ml-1">深層解析</span></div>'
+          + '<div class="text-[10px] text-txt-dim mt-0.5">' + esc(prCell.last_run) + '</div>'
+          + '<div class="flex items-center justify-center gap-1 mt-0.5">' + ci + '<code class="bg-surface-1 px-1 py-0.5 rounded text-[9px] text-txt-dim">' + esc(cmd) + '</code></div>'
           + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></td>';
       } else {
-        row += '<td class="group px-3 py-2.5 text-center border border-surface-3 bg-surface-2 cursor-pointer hover:bg-surface-3 transition-colors" ' + copyHandler + '>'
-          + '<div class="text-txt-dim text-[10px] mb-1">未実行</div>'
-          + '<div class="flex items-center justify-center gap-1">' + copyIcon + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] text-txt-muted">' + esc(cell.command) + '</code></div>'
+        row += '<td colspan="2" class="group px-3 py-2.5 text-center border border-surface-3 bg-surface-2 cursor-pointer hover:bg-surface-3 transition-colors" ' + ch + '>'
+          + '<div class="text-txt-dim text-[10px] mb-1">未実行 <span class="text-[9px] text-txt-dim">（自動で深層解析）</span></div>'
+          + '<div class="flex items-center justify-center gap-1">' + ci + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] text-txt-muted">' + esc(cmd) + '</code></div>'
           + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></td>';
       }
-    });
-    row += '</tr>';
-    tbody.innerHTML += row;
+      row += '</tr>';
+      tbody.innerHTML += row;
+    } else {
+      let row = '<tr><td class="px-3 py-2.5 text-[11px] border border-surface-3 bg-surface-1 font-semibold">' + esc(scopeLabel) + '</td>';
+
+      const defaultCell = cells.find(c => c.scope === scope && c.depth === "default" && c.lens === "default");
+      row += defaultCell ? renderCell(defaultCell) : '<td class="px-3 py-2.5 text-center border border-surface-3 bg-surface-1 text-txt-dim text-[10px]">—</td>';
+
+      const deepCell = cells.find(c => c.scope === scope && c.depth === "deep" && c.lens === "default");
+      row += deepCell ? renderCell(deepCell) : '<td class="px-3 py-2.5 text-center border border-surface-3 bg-surface-1 text-txt-dim text-[10px]">—</td>';
+
+      row += '</tr>';
+      tbody.innerHTML += row;
+    }
   });
 
+  // --- Standalone lens cards: stress, security (scope-independent) ---
+  const lensCards = [
+    { lens: "stress", label: "ストレステスト", cmd: "delta scan --lens stress", desc: "仮想改修 × 全ファイル → 地雷マップ生成（10-30分）" },
+    { lens: "security", label: "セキュリティ", cmd: "delta scan --lens security", desc: "セキュリティ観点の構造矛盾チェック" },
+  ];
+  let cardsHtml = '<div class="mt-4 grid grid-cols-2 gap-3">';
+  lensCards.forEach(lc => {
+    const matchCells = cells.filter(c => c.lens === lc.lens);
+    const count = matchCells.reduce((s, c) => s + c.count, 0);
+    const lastRuns = matchCells.map(c => c.last_run).filter(Boolean).sort();
+    const lastRun = lastRuns.length > 0 ? lastRuns[lastRuns.length - 1] : "";
+    const ci = makeCopyIcon();
+    const ch = makeCopyHandler(lc.cmd);
+    if (count > 0) {
+      doneCount++;
+      cardsHtml += '<div class="group border border-surface-3 rounded-lg p-3 bg-accent/5 cursor-pointer hover:bg-accent/10 transition-colors" ' + ch + '>'
+        + '<div class="flex items-center gap-2 mb-1">'
+        + '<span class="w-2 h-2 rounded-full bg-accent inline-block"></span>'
+        + '<span class="font-semibold text-[12px]">' + esc(lc.label) + '</span>'
+        + '<span class="font-bold text-accent text-[12px]">' + count + '回</span></div>'
+        + '<div class="text-[10px] text-txt-dim">' + esc(lastRun) + '</div>'
+        + '<div class="text-[10px] text-txt-muted mt-1">' + esc(lc.desc) + '</div>'
+        + '<div class="flex items-center gap-1 mt-1.5">' + ci + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[9px] text-txt-dim">' + esc(lc.cmd) + '</code></div>'
+        + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></div>';
+    } else {
+      cardsHtml += '<div class="group border border-surface-3 rounded-lg p-3 bg-surface-2 cursor-pointer hover:bg-surface-3 transition-colors" ' + ch + '>'
+        + '<div class="flex items-center gap-2 mb-1">'
+        + '<span class="font-semibold text-[12px] text-txt-muted">' + esc(lc.label) + '</span>'
+        + '<span class="text-txt-dim text-[11px]">未実行</span></div>'
+        + '<div class="text-[10px] text-txt-muted mt-1">' + esc(lc.desc) + '</div>'
+        + '<div class="flex items-center gap-1 mt-1.5">' + ci + '<code class="bg-surface-1 px-1.5 py-0.5 rounded text-[10px] text-txt-muted">' + esc(lc.cmd) + '</code></div>'
+        + '<div class="copy-msg text-[9px] text-accent mt-0.5 font-semibold h-4" style="visibility:hidden">Copied!</div></div>';
+    }
+  });
+  cardsHtml += '</div>';
+  table.insertAdjacentHTML('afterend', cardsHtml);
+
+})();
+</script>
+<script>
+// Auto-reload: detect file changes and refresh without flicker
+(function() {
+  var lastLen = document.documentElement.innerHTML.length;
+  var iv = setInterval(function() {
+    fetch(location.href, {cache: 'no-store'}).then(function(r) { return r.text(); }).then(function(t) {
+      if (t.length !== lastLen) { clearInterval(iv); location.reload(); }
+    }).catch(function(){});
+  }, 5000);
 })();
 </script>
 </body>

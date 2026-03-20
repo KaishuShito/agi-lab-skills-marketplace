@@ -8,7 +8,7 @@ Scale design:
     debt_coefficient: 0 〜 1.0  (severity × pattern × status — 静的な重さ)
     context_score:    0 〜 数千  (churn × fan_out × user_facing × age / fix_cost × ROI_SCALE — 文脈)
     technical_debt:   0 〜 数千  (debt_coefficient × context_score — 統合指標)
-    info_score:       0 〜 数千  (surprise × entropy × channel / fix_cost × INFO_SCALE)
+    info_score:       0 〜 数千  (discovery_value × concentration_factor × INFO_SCALE)
 
 Usage:
     from scoring import load_scoring_config
@@ -79,10 +79,11 @@ DEFAULT_CHURN_THRESHOLDS: dict[str, float] = {
 }
 
 # Fan-out: number of files that import/reference this file
-# 5参照で max に到達。3参照でも weight 7.0 — 小規模リポで差が出る。
+# 対数スケール: log₂(1 + fan_out) / log₂(1 + high) で天井到達を遅らせる。
+# fan_out=5 → 3.6, fan_out=20 → 6.8, fan_out=50 → 8.5, fan_out=100 → 9.5
 DEFAULT_FAN_OUT_THRESHOLDS: dict[str, float] = {
-    "high": 5.0,       # fan_out >= high → max weight
-    "medium": 2.0,     # fan_out >= medium → 中間
+    "high": 100.0,     # fan_out >= high → max weight (対数なので緩やか)
+    "medium": 5.0,     # fan_out >= medium → 中間
     "low": 0.0,        # fan_out < medium → min weight
     "max_weight": 10.0,
     "min_weight": 1.0,
@@ -293,31 +294,34 @@ def validate_config(cfg: ScoringConfig) -> list[str]:
 def churn_to_weight(changes_6m: int, cfg: ScoringConfig | None = None) -> float:
     """Convert raw git churn (change count in 6 months) to weight.
 
-    Linear interpolation between min_weight and max_weight.
-    hot=3/月 → 6ヶ月で18回変更で max。小規模リポでも差が出る。
+    対数スケール: log₂(1 + churn) / log₂(1 + hot_6m) で穏やかにスケール。
+    churn=1 → 1.5, churn=5 → 3.7, churn=18 → 7.3, churn=36+ → 10.0
     """
+    import math
     t = (cfg or ScoringConfig()).churn_thresholds
     max_w = t.get("max_weight", 10.0)
     min_w = t.get("min_weight", 0.5)
     hot = t.get("hot", 3.0) * 6  # hot is per-month, convert to 6-month total
-    if hot <= 0:
+    if hot <= 0 or changes_6m <= 0:
         return min_w
-    ratio = min(changes_6m / hot, 1.0)
+    ratio = min(math.log2(1 + changes_6m) / math.log2(1 + hot), 1.0)
     return round(min_w + (max_w - min_w) * ratio, 2)
 
 
 def fan_out_to_weight(fan_out: int, cfg: ScoringConfig | None = None) -> float:
     """Convert raw fan-out (import reference count) to weight.
 
-    high=5 で max。3参照でも weight 6.4 — 小規模リポで十分な差。
+    対数スケール: log₂(1 + fan_out) / log₂(1 + high) で天井到達を遅らせる。
+    fan_out=1 → 1.8, fan_out=5 → 3.6, fan_out=20 → 6.8, fan_out=50 → 8.5
     """
+    import math
     t = (cfg or ScoringConfig()).fan_out_thresholds
     max_w = t.get("max_weight", 10.0)
     min_w = t.get("min_weight", 1.0)
-    high = t.get("high", 5.0)
-    if high <= 0:
+    high = t.get("high", 100.0)
+    if high <= 0 or fan_out <= 0:
         return min_w
-    ratio = min(fan_out / high, 1.0)
+    ratio = min(math.log2(1 + fan_out) / math.log2(1 + high), 1.0)
     return round(min_w + (max_w - min_w) * ratio, 2)
 
 

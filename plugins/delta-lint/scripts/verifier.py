@@ -89,7 +89,7 @@ def _verify_cli(system_prompt: str, user_prompt: str) -> str:
 def _verify_anthropic_sdk(system_prompt: str, user_prompt: str, model: str) -> str:
     """Call Claude via the official Anthropic SDK."""
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key, timeout=300.0) if api_key else anthropic.Anthropic(timeout=300.0)
     message = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -249,7 +249,6 @@ def verify_findings(
     for i, finding in enumerate(verifiable):
         v = verdict_map.get(i)
         if v is None:
-            # LLM didn't return a verdict for this finding — keep it (conservative)
             confirmed.append(finding)
             continue
 
@@ -258,6 +257,29 @@ def verify_findings(
 
         if verdict == "confirmed" and confidence >= confidence_threshold:
             finding["_verify_confidence"] = confidence
+            finding["_verify_reason"] = v.get("reason", "")
+
+            # --- Certainty: double-check rule ---
+            # LLM verifier's own certainty assessment
+            verifier_certainty = v.get("certainty", "uncertain")
+            det_severity = finding.get("severity", "low")
+
+            # definite requires BOTH: detection=high AND verify=definite+confidence>=0.85
+            if (verifier_certainty == "definite"
+                    and det_severity == "high"
+                    and confidence >= 0.85):
+                final_certainty = "definite"
+            elif verifier_certainty in ("definite", "probable") and confidence >= 0.6:
+                final_certainty = "probable"
+            else:
+                final_certainty = "uncertain"
+
+            tax = finding.get("taxonomies") or {}
+            tax["certainty"] = final_certainty
+            if v.get("reproducibility"):
+                tax["reproducibility"] = v["reproducibility"]
+            finding["taxonomies"] = tax
+
             confirmed.append(finding)
         else:
             finding["_verify_verdict"] = verdict

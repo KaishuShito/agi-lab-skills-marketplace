@@ -39,6 +39,16 @@ cd ~/.claude/skills/delta-lint/scripts && python -c "from persona_translator imp
 
 判定したペルソナを `{persona}` 変数として以降のステップで使う。
 
+## Step 0.3: Detect output language (--lang)
+
+**ユーザーが日本語で指示した場合は `--lang ja` を付ける。** 英語で指示した場合は `--lang en`（デフォルト）。
+
+- ユーザーの入力が日本語 → `--lang ja`
+- ユーザーの入力が英語 → `--lang en`
+- `.delta-lint/config.json` に `"lang": "ja"` がある → `--lang ja`
+
+Step 1 以降のすべてのコマンドに `--lang {lang}` を付与する。
+
 ## Step 0.4: Detect time window (--since)
 
 If the user mentions a time period, map it to `--since`:
@@ -74,23 +84,23 @@ The CLI has built-in logic for file selection (`--since 3months` default, `--sco
 
 **Normal mode (diff — default: 3 months of history):**
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --lang {lang} --verbose 2>&1
 ```
 
 **Custom period (e.g. 1 year):**
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --since 1year --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --lang {lang} --since 1year --verbose 2>&1
 ```
 
 **PR mode:**
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --scope pr --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --lang {lang} --scope pr --verbose 2>&1
 ```
 
 **If cli.py reports 0 files** (「直近 3months に変更されたソースファイルがありません」):
 The repo has no recent commits (fork, archive, etc.). Re-run with `--scope smart`:
 ```bash
-cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --scope smart --verbose 2>&1
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --lang {lang} --scope smart --verbose 2>&1
 ```
 Show: `📅 直近3ヶ月の変更なし → smart mode（git履歴の高リスクファイル）でスキャンします`
 
@@ -134,7 +144,26 @@ For findings tagged with `[EXPIRED SUPPRESS]`:
 ## Step 5.5: Auto-triage (AUTONOMOUS — do NOT ask user)
 
 **findings が 1件以上ある場合、確認を求めず自動で全 findings をトリアージする。**
-各 finding について以下の3チェックを並列で実行し、liveness ラベルを付与する。
+各 finding について以下のチェックを実行し、liveness ラベルを付与する。
+
+### Check 0: Already reported（既存 Issue/PR の確認）
+
+finding の対象ファイル名・関数名・エラー内容で、GitHub 上に既存の Issue/PR がないか確認する:
+
+```bash
+# ファイル名や関数名でIssue/PRを検索
+gh search issues --repo {owner/repo} "{file_name OR function_name}" --limit 5
+gh search prs --repo {owner/repo} "{file_name OR function_name}" --state all --limit 5
+```
+
+検索キーワードは finding ごとに適切に選ぶ（ファイル名、関数名、エラーメッセージの一部など）。
+
+- 同じ問題の Issue/PR がオープン中 → `🔁 KNOWN (Issue #NNN)` — 重複報告しない
+- 同じ問題の PR がマージ済み → `✅ FIXED (PR #NNN)` — 修正済み
+- WONTFIX / by design でクローズ済み → `🔁 KNOWN (wontfix)` — 再報告しない
+- 見つからない → Check 1 へ
+
+**KNOWN の finding は DEAD/FIXED と同様、findings add しない。** ただし参考としてトリアージ結果には含める。
 
 ### Check 1: Dead code（caller ゼロ）
 
@@ -171,9 +200,43 @@ cd {repo_path} && git diff main..origin/{branch} -- {file_path} | head -30
 
 finding の条件が現在の設定/コードで実際に発火するか確認:
 
-- **デフォルト値で発火**: 追加設定なしで再現 → `🔴 LIVE`
+- **デフォルト値で発火**: 追加設定なしで再現 → Check 4 へ
 - **特定の設定/入力で発火**: 条件は限定的だが到達可能 → `🟡 DORMANT`（条件を明記）
 - **現設定では到達不能**: 将来の変更で発火する可能性のみ → `🟡 DORMANT`（リスクは注記）
+
+### Check 4: Confirmed Bug（確定バグ判断 — Issue/PR を出して恥ずかしくないか？）
+
+Check 3 で到達可能と判定された finding に対して、**本当にバグか、意図的な設計か**を最終確認する。
+これは Issue/PR 提出前の最終ゲート。以下の観点で検証する:
+
+**4a. 意図的な設計ではないか？**
+- コメントや CHANGELOG に「intentional」「by design」「won't fix」等の記述がないか確認
+- 同じパターンがリポ内の複数箇所で一貫しているか（一貫していれば設計方針の可能性が高い）
+```bash
+cd {repo_path} && git log --all --oneline -- {file_a} {file_b} | grep -iE "intent|design|wont.?fix|by.design|deliberate" | head -5
+```
+
+**4b. テストが意図を証明していないか？**
+- 該当の振る舞いをテストが明示的に期待していないか確認
+```bash
+cd {repo_path} && grep -rn "{関数名\|変数名\|値}" --include="*test*" --include="*spec*" --include="*_test.*" | head -10
+```
+- テストが「この値を返すこと」を assert しているなら、それは仕様であってバグではない
+
+**4c. 内部証拠の強度は十分か？**
+- finding の `internal_evidence`（同リポ内の正しい実装例）があるか？
+  - **あり**: 同じリポの別箇所に正しいパターンが存在 → バグの確度が高い
+  - **なし**: 正しいパターンが見つからない → 仕様である可能性を疑う
+
+**4d. 影響の具体性**
+- 「ユーザーが実際に遭遇するシナリオ」を1文で書けるか？
+  - 書ける → 確定バグ `🔴 CONFIRMED`
+  - 書けない（理論上の矛盾だが実害が不明） → `🟡 SUSPICIOUS`（findings add するが Issue/PR は出さない）
+
+**判定結果:**
+- 4a〜4d すべてクリア → `🔴 CONFIRMED` — Issue/PR を出してよい
+- テストが意図を証明 or 設計判断の痕跡あり → `⚪ BY_DESIGN` — 報告しない
+- 内部証拠なし + 影響シナリオが曖昧 → `🟡 SUSPICIOUS` — findings add するが Issue/PR は推奨しない
 
 ### Triage 結果の表示
 
@@ -182,24 +245,33 @@ finding の条件が現在の設定/コードで実際に発火するか確認:
 ```
 ── δ-lint ── スキャン結果
 
-  #1 [🔴 LIVE]    ④ Guard Non-Propagation — handler.ts vs validator.ts
+  #1 [🔴 CONFIRMED] ④ Guard Non-Propagation — handler.ts vs validator.ts
      caller: 3箇所, デフォルト設定で再現可能
+     内部証拠: create_handler.ts:45 に同じガードあり
      → 放置すると: バリデーション済みと見なされた未検証データがDBに書き込まれる
-  #2 [🟡 DORMANT] ② Semantic Mismatch — config.py vs loader.py
+  #2 [🟡 SUSPICIOUS] ① Asymmetric Defaults — encoder.ts vs decoder.ts
+     caller: 5箇所, 到達可能だが内部証拠なし
+     → テストが現在の振る舞いを期待している可能性あり。Issue/PR は慎重に。
+  #3 [🟡 DORMANT] ② Semantic Mismatch — config.py vs loader.py
      caller: 1箇所, recursive=False を渡した時のみ発火（現在の呼び出し元はすべて True）
      → 放置すると: recursive=False で呼ばれた場合にネストされた設定が無視される
-  #3 [🪦 DEAD]    ① Asymmetric Defaults — old_handler.ts vs utils.ts
+  #4 [🔁 KNOWN]   ① Asymmetric Defaults — parser.ts vs serializer.ts
+     既存 Issue #1234 で報告済み（open）
+  #5 [🪦 DEAD]    ① Asymmetric Defaults — old_handler.ts vs utils.ts
      caller: 0箇所（コメントアウト済み）
-  #4 [✅ FIXED]   ④ Guard Non-Propagation — auth.go vs middleware.go
+  #6 [✅ FIXED]   ④ Guard Non-Propagation — auth.go vs middleware.go
      develop ブランチで修正済み（commit abc1234）
 
-🎯 対応推奨: #1 のみ要対応。#2 は条件付きリスク、#3-#4 は無視可。
+🎯 対応推奨: #1 は確定バグ → Issue/PR 推奨。
+   #2 は要検討（テスト確認後に判断）。#3 は条件付きリスク。#4-#6 は無視可。
 ```
 
-**LIVE/DORMANT の finding には必ず「→ 放置すると:」行を付ける。** finding の `user_impact` フィールドから要約する。これが delta-lint の最大の訴求ポイント — 「コードの問題」ではなく「ユーザーが受ける実害」を伝える。DEAD/FIXED には不要。
+**CONFIRMED/SUSPICIOUS/DORMANT の finding には必ず「→ 放置すると:」行を付ける。** finding の `user_impact` フィールドから要約する。これが delta-lint の最大の訴求ポイント — 「コードの問題」ではなく「ユーザーが受ける実害」を伝える。DEAD/FIXED/KNOWN/BY_DESIGN には不要。
 
-**LIVE の finding のみを Step 6 で findings add する。** DEAD/FIXED は記録しない（ノイズ削減）。
+**CONFIRMED の finding のみを Issue/PR 提出候補とする。**
+SUSPICIOUS は findings add するが Issue/PR は推奨しない（追加調査を促す）。
 DORMANT は findings add するが `--finding-severity` を1段下げる（high→medium, medium→low）。
+DEAD/FIXED/KNOWN/BY_DESIGN は findings add しない。
 
 ## Step 5.7: Persona translation（pm / qa の場合のみ）
 
@@ -225,7 +297,7 @@ print(result)
 
 **If findings exist**:
 1. まず `findings list --repo-name {repo}` で既存の記録を確認し、重複を避ける
-2. 確認を求めず、**LIVE + DORMANT の findings のみ**を自動で `findings add` する（DEAD/FIXED は記録しない）
+2. 確認を求めず、**LIVE + DORMANT の findings のみ**を自動で `findings add` する（DEAD/FIXED/KNOWN は記録しない）
 3. DORMANT は `--finding-severity` を1段下げて記録する（high→medium, medium→low）
 4. 記録完了後、suppress の提案を行う: "suppress したい finding があれば番号を教えてください（例: `/delta-lint suppress 3`）"
 

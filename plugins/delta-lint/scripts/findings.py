@@ -108,13 +108,13 @@ def append_scan_history(
     finding_ids: list[str] | None = None,
     patterns_found: list[str] | None = None,
     scope: str = "",    # 3-axis: "diff" | "smart" | "wide"
-    depth: str = "",    # 3-axis: "1hop" | "graph"
+    depth: str = "",    # 3-axis: "default" | "deep"
     lens: str = "",     # 3-axis: "default" | "stress" | "security"
 ) -> None:
     """Append a scan record to scan_history.jsonl.
 
     finding_ids: Chao1 推定に使用。このスキャンで検出された finding ID 一覧。
-    patterns_found: パターン別 surprise 計算に使用。検出されたパターン番号一覧。
+    patterns_found: スキャン履歴の集計用。検出されたパターン番号一覧。
     scope/depth/lens: 3-axis scan model。coverage matrix で使用。
     """
     path = Path(base_path) / SCAN_HISTORY_FILE
@@ -138,9 +138,9 @@ def append_scan_history(
     if depth:
         record["depth"] = depth
     elif scan_type == "deep":
-        record["depth"] = "graph"
+        record["depth"] = "deep"
     else:
-        record["depth"] = "1hop"
+        record["depth"] = "default"
     if lens:
         record["lens"] = lens
     elif scan_type == "stress":
@@ -178,13 +178,12 @@ def compute_scan_depth(base_path: str | Path) -> dict:
     Returns dict with: scan_count, total_clusters, grade, last_scan,
                        cells_done, cells_total.
 
-    Grade is based on how many of the 18 coverage-matrix cells have been
-    executed, not just raw scan count:
+    Grade is based on how many of the 9 logical cells have been executed:
         -  : 0 cells
-        D  : 1-3 cells
-        C  : 4-9 cells
-        B  : 10-17 cells, OR all 18 but avg runs per cell < 2
-        A  : all 18 cells AND avg runs per cell >= 2
+        D  : 1-2 cells
+        C  : 3-5 cells
+        B  : 6-8 cells, OR all 9 but avg runs per cell < 2
+        A  : all 9 cells AND avg runs per cell >= 2
     """
     history = load_scan_history(base_path)
     scan_count = len(history)
@@ -193,14 +192,14 @@ def compute_scan_depth(base_path: str | Path) -> dict:
 
     matrix = compute_coverage_matrix(base_path)
     cells_done = matrix.get("cells_done", 0)
-    cells_total = matrix.get("cells_total", 24)
+    cells_total = matrix.get("cells_total", 10)
     total_runs = sum(c.get("count", 0) for c in matrix.get("cells", []))
 
     if cells_done == 0:
         grade = "-"
-    elif cells_done <= 3:
+    elif cells_done <= 2:
         grade = "D"
-    elif cells_done <= 9:
+    elif cells_done <= 5:
         grade = "C"
     elif cells_done < cells_total:
         grade = "B"
@@ -224,57 +223,50 @@ def compute_scan_depth(base_path: str | Path) -> dict:
 
 # Map legacy scan_type to 3-axis model
 _SCAN_TYPE_TO_AXES = {
-    "diff":     {"scope": "diff",  "depth": "1hop",  "lens": "default"},
-    "existing": {"scope": "smart", "depth": "1hop",  "lens": "default"},
-    "deep":     {"scope": "wide",  "depth": "graph", "lens": "default"},
-    "stress":   {"scope": "wide",  "depth": "1hop",  "lens": "stress"},
+    "diff":     {"scope": "diff",  "depth": "default", "lens": "default"},
+    "existing": {"scope": "smart", "depth": "default", "lens": "default"},
+    "deep":     {"scope": "wide",  "depth": "deep",    "lens": "default"},
+    "stress":   {"scope": "wide",  "depth": "default", "lens": "stress"},
 }
 
 # All valid axis values
 _SCOPES = ["diff", "pr", "smart", "wide"]
-_DEPTHS = ["1hop", "graph"]
+_DEPTHS = ["default", "deep"]
 _LENSES = ["default", "stress", "security"]
 
 # Human-readable labels
 _SCOPE_LABELS = {"diff": "変更差分", "pr": "PR差分", "smart": "履歴優先", "wide": "全ファイル"}
-_DEPTH_LABELS = {"1hop": "1-hop依存", "graph": "構造グラフ"}
+_DEPTH_LABELS = {"default": "直接依存", "deep": "深層依存"}
 _LENS_LABELS = {"default": "構造矛盾検査", "stress": "ストレステスト", "security": "セキュリティ"}
 
 # Command fragments per axis value
 _SCOPE_FLAGS = {"diff": "", "pr": "--scope pr", "smart": "--scope smart", "wide": "--scope wide"}
-_DEPTH_FLAGS = {"1hop": "", "graph": "--depth graph"}
+_DEPTH_FLAGS = {"default": "", "deep": "--depth deep"}
 _LENS_FLAGS = {"default": "", "stress": "--lens stress", "security": "--lens security"}
 
 
 def compute_coverage_matrix(base_path: str | Path) -> dict:
     """Compute a 3-axis coverage matrix from scan history.
 
-    Unified matrix: rows = scope × depth (8 rows), cols = lens (3 cols) = 24 cells.
+    cells: all 24 scope × depth × lens combinations (for backward compat).
+    cells_done / cells_total: based on 10 logical cells:
+      - 8 scope × depth (default lens) in the matrix
+      - 1 stress (scope-independent)
+      - 1 security (scope-independent)
 
     Returns:
         {
-            "cells": [
-                {
-                    "scope": "diff", "depth": "1hop", "lens": "default",
-                    "scope_label": "変更差分", "depth_label": "1-hop依存", "lens_label": "矛盾+負債",
-                    "count": 3, "last_run": "2026-03-19 14:30",
-                    "command": "delta scan",
-                    "is_flow": true,
-                },
-                ...
-            ],
-            "cells_done": 3,     # 実行済みセル数
-            "cells_total": 24,   # 全セル数 (4 scopes × 2 depths × 3 lenses)
+            "cells": [...],       # 24 entries (raw data)
+            "cells_done": 3,      # Logical cells executed (max 10)
+            "cells_total": 10,    # 8 matrix + stress + security
         }
     """
     history = load_scan_history(Path(base_path))
 
     # Count per (scope, depth, lens) combination.
-    # Only count records with findings_count > 0 (successful scans).
+    # Count all completed scans (including those with 0 findings).
     counts: dict[tuple, list] = {}
     for record in history:
-        if record.get("findings_count", 0) <= 0:
-            continue
         scan_type = record.get("scan_type", "diff")
         if "scope" in record:
             raw_scope = record["scope"]
@@ -284,9 +276,17 @@ def compute_coverage_matrix(base_path: str | Path) -> dict:
                 scope_norm = "wide"
             else:
                 scope_norm = raw_scope
+            raw_depth = record.get("depth", "default")
+            # Normalize legacy depth values: 1hop → default, graph → deep
+            if raw_depth == "1hop":
+                depth_norm = "default"
+            elif raw_depth == "graph":
+                depth_norm = "deep"
+            else:
+                depth_norm = raw_depth
             axes = {
                 "scope": scope_norm,
-                "depth": record.get("depth", "1hop"),
+                "depth": depth_norm,
                 "lens": record.get("lens", "default"),
             }
         else:
@@ -333,7 +333,17 @@ def compute_coverage_matrix(base_path: str | Path) -> dict:
                 if count > 0:
                     cells_done += 1
 
-    cells_total = len(_SCOPES) * len(_DEPTHS) * len(_LENSES)  # 24
+    # Matrix: 7 displayed cells (diff/smart/wide × 2 + pr × 1) + 1 stress + 1 security = 9
+    # Note: pr scope only shows deep (auto-deep), so pr×default is not displayed.
+    default_done = sum(
+        1 for c in cells
+        if c["lens"] == "default" and c["count"] > 0
+        and not (c["scope"] == "pr" and c["depth"] == "default")  # pr×default is not displayed
+    )
+    stress_done = 1 if any(c["lens"] == "stress" and c["count"] > 0 for c in cells) else 0
+    security_done = 1 if any(c["lens"] == "security" and c["count"] > 0 for c in cells) else 0
+    cells_done = default_done + stress_done + security_done
+    cells_total = 9  # 7 matrix (diff/smart/wide × 2 + pr × 1) + stress + security
 
     return {
         "cells": cells,
@@ -485,11 +495,14 @@ def _repo_file(base_path: str | Path, repo_name: str) -> Path:
 
 def generate_id(repo: str, file: str, title: str,
                 file_b: str = "", pattern: str = "") -> str:
-    """Generate a short deterministic ID.
+    """Generate a short deterministic ID with dl- prefix.
 
     When file_b and pattern are provided, uses structural identity
     (file pair + pattern) instead of title — immune to LLM wording variance.
     Falls back to repo:file:title for manual additions or single-file findings.
+
+    The dl- prefix signals to Claude Code that this is a delta-lint finding ID,
+    enabling automatic routing to the investigation workflow.
     """
     if file_b and pattern:
         files = sorted([file, file_b])
@@ -497,8 +510,7 @@ def generate_id(repo: str, file: str, title: str,
     else:
         key = f"{repo}:{file}:{title}"
     h = hashlib.sha256(key.encode()).hexdigest()[:8]
-    safe_repo = repo.split("/")[-1] if "/" in repo else repo
-    return f"{safe_repo}-{h}"
+    return f"dl-{h}"
 
 
 def _load_lines(path: Path) -> list[dict]:
@@ -542,6 +554,45 @@ def _get_latest(lines: list[dict]) -> dict[str, dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _normalize_pattern(pattern: str) -> str:
+    """Normalize pattern field to circled number only (e.g. '⑨ Format Mismatch' → '⑨')."""
+    if not pattern:
+        return pattern
+    # Keep only the first character if it's a circled number (①-⑩)
+    first = pattern[0]
+    if first in "①②③④⑤⑥⑦⑧⑨⑩":
+        return first
+    return pattern
+
+
+def _extract_code_entities(text: str) -> set[str]:
+    """Extract code-like identifiers from text (function names, filenames, constants)."""
+    import re as _re_ent
+    entities: set[str] = set()
+    entities.update(_re_ent.findall(r'`([^`]+)`', text))
+    entities.update(_re_ent.findall(r'\b([a-zA-Z_][a-z0-9]*(?:_[a-zA-Z0-9]+)+)\b', text))
+    entities.update(_re_ent.findall(r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b', text))
+    entities.update(_re_ent.findall(r'\b([\w.-]+\.(?:py|js|ts|json|csv|yml|yaml|html|jsx|tsx|vue))\b', text))
+    return {e.lower().rstrip('()[]') for e in entities if len(e) > 3}
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Combined similarity: trigram text similarity + code entity overlap."""
+    a_full, b_full = a, b
+    a, b = a[:100].lower(), b[:100].lower()
+    if not a or not b:
+        return 0.0
+    def _trigrams(s: str) -> set:
+        return {s[i:i+3] for i in range(max(len(s) - 2, 1))}
+    ta, tb = _trigrams(a), _trigrams(b)
+    text_sim = len(ta & tb) / len(ta | tb) if (ta and tb) else 0.0
+    ea, eb = _extract_code_entities(a_full), _extract_code_entities(b_full)
+    if ea and eb:
+        entity_sim = len(ea & eb) / len(ea | eb)
+        return max(text_sim, entity_sim)
+    return text_sim
+
+
 def add_finding(
     base_path: str | Path,
     finding: Finding,
@@ -549,8 +600,13 @@ def add_finding(
     """Append a finding to the repo's JSONL file.
 
     Returns the finding ID.
-    Raises ValueError if duplicate ID with same status exists.
+    Raises ValueError if duplicate ID with same status exists,
+    or if a semantically similar finding already exists (>60% title similarity
+    with the same pattern).
     """
+    # Normalize pattern before save
+    finding.pattern = _normalize_pattern(finding.pattern)
+
     base_path = Path(base_path)
     fdir = _findings_dir(base_path)
     fdir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +618,30 @@ def add_finding(
     latest = _get_latest(existing)
     if finding.id in latest and latest[finding.id].get("status") == finding.status:
         raise ValueError(f"Duplicate: {finding.id} already has status '{finding.status}'")
+
+    # Check for semantic duplicate
+    # Same pattern: 55% threshold (text or entity similarity)
+    # Cross pattern: 60% threshold on entity overlap only (different angles of same bug)
+    new_entities = _extract_code_entities(finding.title)
+    for fid, entry in latest.items():
+        if entry.get("status") in ("suppressed", "fixed", "wontfix"):
+            continue
+        same_pattern = _normalize_pattern(entry.get("pattern", "")) == finding.pattern
+        existing_title = entry.get("title", "")
+        if same_pattern:
+            sim = _title_similarity(existing_title, finding.title)
+            if sim > 0.55:
+                raise ValueError(
+                    f"Semantic duplicate: {finding.id} ≈ {fid} ({sim:.0%} similar)"
+                )
+        elif new_entities:
+            old_entities = _extract_code_entities(existing_title)
+            if old_entities:
+                entity_sim = len(new_entities & old_entities) / len(new_entities | old_entities)
+                if entity_sim > 0.6:
+                    raise ValueError(
+                        f"Cross-pattern duplicate: {finding.id} ≈ {fid} (entities {entity_sim:.0%})"
+                    )
 
     # Set timestamp if not provided
     if not finding.found_at:
@@ -577,15 +657,25 @@ def add_finding(
 
 
 def _find_file_for_id(base_path: Path, finding_id: str) -> tuple[Path, dict] | None:
-    """Search all JSONL files for a finding by ID. Returns (file_path, latest_entry) or None."""
+    """Search all JSONL files for a finding by ID. Returns (file_path, latest_entry) or None.
+
+    Supports both new (dl-xxx) and legacy ({repo}-xxx) ID formats.
+    Also matches by hash suffix alone (e.g. "65edfb5a" matches "dl-65edfb5a").
+    """
     fdir = _findings_dir(base_path)
     if not fdir.exists():
         return None
+
+    hash_suffix = finding_id.split("-")[-1] if "-" in finding_id else finding_id
+
     for fpath in sorted(fdir.glob("*.jsonl")):
         lines = _load_lines(fpath)
         latest = _get_latest(lines)
         if finding_id in latest:
             return fpath, latest[finding_id]
+        for fid, entry in latest.items():
+            if fid.endswith(f"-{hash_suffix}"):
+                return fpath, entry
     return None
 
 
@@ -1003,7 +1093,7 @@ def _findings_verify_top(base_path: str, args) -> None:
     scan_history = load_scan_history(base_path)
     for f in candidates:
         try:
-            info = finding_information_score(f, scan_history).get("info_score", 0)
+            info = finding_information_score(f, scan_history, all_findings=findings).get("info_score", 0)
         except Exception:
             info = 0
         try:
@@ -1143,7 +1233,8 @@ def ingest_stress_test_debt(base_path: str | Path) -> list[str]:
         findings = r.get("findings", [])
         for f in findings:
             score = {"high": 3, "medium": 2, "low": 1}.get(f.get("severity", "low"), 1)
-            for af in mod.get("affected_files", [target]):
+            hit_files = ([target] if target else []) + mod.get("affected_files", [])
+            for af in hit_files:
                 file_risk[af] = file_risk.get(af, 0) + score
                 file_findings_count[af] = file_findings_count.get(af, 0) + 1
 
@@ -1230,32 +1321,123 @@ def _load_churn_map(base_path: str | Path) -> dict[str, int]:
     """Load file → change_count map from git history.
 
     Sources (in priority order):
-    1. .delta-lint/stress-test/structure.json → dev_patterns (has churn evidence)
-    2. Live git log (if repo is a git repo)
+    1. Live git log --since 6 months (most accurate for full clones)
+    2. Shallow-clone fallback: full git log with per-file variance
+    3. If all churn=1 (depth=1 clone): estimate from file size
 
     Returns {relative_path: change_count_in_6_months}.
     """
     base = Path(base_path)
     churn: dict[str, int] = {}
 
-    # Try live git log first (most accurate)
     try:
         import subprocess
+        from collections import Counter
+
         result = subprocess.run(
             ["git", "log", "--since=6 months ago", "--name-only", "--pretty=format:"],
             capture_output=True, text=True, cwd=str(base), timeout=15,
         )
         if result.returncode == 0:
-            from collections import Counter
             files = [
                 line.strip() for line in result.stdout.splitlines()
                 if line.strip() and not line.startswith(" ")
             ]
             churn = dict(Counter(files))
+
+        total_changes = sum(churn.values())
+        has_variance = total_changes > len(churn)
+
+        if has_variance:
+            return churn
+
+        # Shallow-clone or depth=1: no per-file churn variance available.
+        # Fall back to full log; if still no variance, use file-size proxy.
+        total_days = _git_history_span_days(base)
+
+        full = subprocess.run(
+            ["git", "log", "--name-only", "--pretty=format:"],
+            capture_output=True, text=True, cwd=str(base), timeout=30,
+        )
+        if full.returncode == 0:
+            all_files = [
+                line.strip() for line in full.stdout.splitlines()
+                if line.strip() and not line.startswith(" ")
+            ]
+            full_counts = dict(Counter(all_files))
+
+            # Check if full log has variance (multi-commit history)
+            if full_counts and max(full_counts.values()) > 1:
+                scale = min(180.0 / max(total_days, 1), 1.0)
+                churn = {
+                    f: max(round(c * scale), 1)
+                    for f, c in full_counts.items()
+                }
+                return churn
+
+        # depth=1: all files have exactly 1 commit. Use file size as proxy.
+        # Larger files tend to be changed more frequently (Lehman's law).
+        churn = _estimate_churn_from_file_size(base, set(churn.keys()))
+
     except Exception:
         pass
 
     return churn
+
+
+def _estimate_churn_from_file_size(base: Path, files: set[str]) -> dict[str, int]:
+    """Estimate relative churn from file size when git history is unavailable.
+
+    Uses sqrt-scaled file size to produce values in 1..18 range
+    (matching the 6-month hot threshold). sqrt gives better spread
+    than log for files within similar size ranges.
+    """
+    import math
+    import os
+    result: dict[str, int] = {}
+    sizes: dict[str, int] = {}
+
+    for f in files:
+        p = base / f
+        try:
+            sizes[f] = os.path.getsize(p)
+        except OSError:
+            sizes[f] = 0
+
+    if not sizes:
+        return result
+
+    max_size = max(sizes.values()) or 1
+
+    for f, sz in sizes.items():
+        if sz <= 0:
+            result[f] = 1
+            continue
+        ratio = math.sqrt(sz) / math.sqrt(max_size)
+        result[f] = max(round(ratio * 18), 1)
+
+    return result
+
+
+def _git_history_span_days(base: Path) -> int:
+    """Return the number of days between oldest and newest commit."""
+    import subprocess
+    try:
+        oldest = subprocess.run(
+            ["git", "log", "--reverse", "--format=%at", "--max-count=1"],
+            capture_output=True, text=True, cwd=str(base), timeout=10,
+        )
+        newest = subprocess.run(
+            ["git", "log", "--format=%at", "--max-count=1"],
+            capture_output=True, text=True, cwd=str(base), timeout=10,
+        )
+        if oldest.returncode == 0 and newest.returncode == 0:
+            o = int(oldest.stdout.strip())
+            n = int(newest.stdout.strip())
+            return max((n - o) // 86400, 1)
+    except Exception:
+        pass
+    return 365
 
 
 def _load_fan_out_map(base_path: str | Path) -> dict[str, int]:
@@ -1430,8 +1612,12 @@ def generate_dashboard(
 
     # --- ROI data: churn, fan_out, roi_score ---
     # Priority: JSONL stored values > live git > 0
+    import sys as _sys
+    print("  ├ git churn 解析中...", file=_sys.stderr, flush=True)
     churn_map = _load_churn_map(base_path)
+    print("  ├ fan-out 解析中...", file=_sys.stderr, flush=True)
     fan_out_map = _load_fan_out_map(base_path)
+    print("  ├ スコアリング中...", file=_sys.stderr, flush=True)
 
     # Count findings per file to distribute fan_out fairly
     from collections import Counter as _Counter
@@ -1521,12 +1707,13 @@ def generate_dashboard(
         coverage = compute_coverage_from_history(scan_history, findings)
         # Attach info_score to each finding
         for f in findings:
-            info = finding_information_score(f, scan_history)
+            info = finding_information_score(f, scan_history, all_findings=findings)
             certainty = (f.get("taxonomies") or {}).get("certainty", "")
             is_uncertain = certainty == "uncertain" or "構造的脆弱性" in f.get("title", "")
             discount = 0.3 if is_uncertain else 1.0
             f["info_score"] = round(info["info_score"] * discount, 1)
-            f["surprise"] = info["surprise"]
+            f["discovery_value"] = info.get("discovery_value", 0.0)
+            f["concentration_factor"] = info.get("concentration_factor", 0.0)
     except Exception:
         coverage = {
             "estimated_total": len(findings), "coverage_pct": 100,
@@ -1574,9 +1761,9 @@ def generate_dashboard(
     except Exception:
         pass
 
-    # Relative link to landmine map (from .delta-lint/findings/ to .delta-lint/stress-test/)
-    landmine_map_path = base_path / ".delta-lint" / "stress-test" / "landmine_map.html"
-    landmine_link = "../stress-test/landmine_map.html" if landmine_map_path.exists() else "#"
+    # Landmine map is integrated into the dashboard as the treemap tab.
+    # Link to self with #landmine anchor for backward compat.
+    landmine_link = "#landmine"
 
     # Build progress bar HTML + auto-refresh meta tag for streaming mode
     is_scanning = scan_progress and not scan_progress.get("is_complete", True)
@@ -1639,6 +1826,7 @@ def generate_dashboard(
         coverage_matrix_json=json.dumps(compute_coverage_matrix(base_path), ensure_ascii=False),
     )
 
+    print("  └ HTML 書き出し中...", file=_sys.stderr, flush=True)
     out_path = _findings_dir(base_path) / "dashboard.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")

@@ -68,10 +68,15 @@ class FindingContext:
 # Priority scoring
 # ---------------------------------------------------------------------------
 
-def score_finding(f: dict, scan_history: list[dict] | None = None) -> float:
+def score_finding(
+    f: dict,
+    scan_history: list[dict] | None = None,
+    all_findings: list[dict] | None = None,
+) -> float:
     """Compute priority score for a finding (higher = fix first)."""
     try:
-        info = finding_information_score(f, scan_history)
+        pool = all_findings if all_findings is not None else [f]
+        info = finding_information_score(f, scan_history, all_findings=pool)
         info_score = info["info_score"]
     except Exception:
         info_score = 0
@@ -348,7 +353,7 @@ def run_debt_loop(
         # Sort by priority
         scan_history = load_scan_history(repo_path)
         for f in candidates:
-            f["_priority"] = score_finding(f, scan_history)
+            f["_priority"] = score_finding(f, scan_history, all_findings=all_findings)
         candidates.sort(key=lambda x: -x.get("_priority", 0))
         targets = candidates[:count]
 

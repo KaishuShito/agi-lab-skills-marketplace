@@ -122,12 +122,18 @@ def _detect_base_branch(repo_path: str) -> str | None:
     """Auto-detect the base branch for PR diff.
 
     Priority:
-      1. GITHUB_BASE_REF (set by GitHub Actions on pull_request events)
-      2. Heuristic: origin/main or origin/master
+      1. GITHUB_BASE_REF env var (GitHub Actions pull_request events)
+      2. gh CLI: query the actual PR's base branch for the current HEAD
+      3. Fallback: origin/main or origin/master
     """
     env_base = os.environ.get("GITHUB_BASE_REF")
     if env_base:
         return f"origin/{env_base}"
+
+    # Try gh CLI to get the real PR base branch
+    pr_base = _detect_pr_base_via_gh(repo_path)
+    if pr_base:
+        return pr_base
 
     for candidate in ["origin/main", "origin/master"]:
         r = subprocess.run(
@@ -136,6 +142,32 @@ def _detect_base_branch(repo_path: str) -> str | None:
         )
         if r.returncode == 0:
             return candidate
+    return None
+
+
+def _detect_pr_base_via_gh(repo_path: str) -> str | None:
+    """Use gh CLI to find the base branch of the PR for the current branch.
+
+    Returns 'origin/{base_branch}' if a PR exists, None otherwise.
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "view", "--json", "baseRefName", "-q", ".baseRefName"],
+            capture_output=True, text=True, cwd=repo_path, timeout=15,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            base_name = r.stdout.strip()
+            ref = f"origin/{base_name}"
+            verify = subprocess.run(
+                ["git", "rev-parse", "--verify", ref],
+                capture_output=True, text=True, cwd=repo_path, timeout=5,
+            )
+            if verify.returncode == 0:
+                return ref
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
     return None
 
 
@@ -219,12 +251,12 @@ def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
     # Staged changes
     staged = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True, text=True, cwd=repo_path,
+        capture_output=True, text=True, cwd=repo_path, timeout=30,
     )
     # Unstaged changes
     unstaged = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True, text=True, cwd=repo_path,
+        capture_output=True, text=True, cwd=repo_path, timeout=30,
     )
     # Combine and deduplicate
     files = set()
@@ -237,7 +269,7 @@ def get_changed_files(repo_path: str, diff_target: str = "HEAD") -> list[str]:
     if not files:
         result = subprocess.run(
             ["git", "diff", f"{diff_target}~1", diff_target, "--name-only", "--diff-filter=ACMR"],
-            capture_output=True, text=True, cwd=repo_path,
+            capture_output=True, text=True, cwd=repo_path, timeout=30,
         )
         for line in result.stdout.strip().split("\n"):
             if line.strip():
@@ -276,11 +308,11 @@ def get_recent_changed_files(repo_path: str, since: str = "3months") -> list[str
     # Also include current staged/unstaged changes
     staged = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True, text=True, cwd=repo_path,
+        capture_output=True, text=True, cwd=repo_path, timeout=30,
     )
     unstaged = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True, text=True, cwd=repo_path,
+        capture_output=True, text=True, cwd=repo_path, timeout=30,
     )
     for output in [staged.stdout, unstaged.stdout]:
         for line in output.strip().split("\n"):
@@ -960,6 +992,7 @@ def build_context(
     *,
     retrieval_config: dict | None = None,
     doc_files: list[str] | None = None,
+    max_hops: int = 1,
 ) -> ModuleContext:
     """Build module context for LLM detection.
 
@@ -969,8 +1002,9 @@ def build_context(
     - Tier 2 (relative, 0.85): always included
     - Tier 3 (project, 0.50): included if budget allows, capped at 2 per file
 
-    Dependencies are sorted by confidence in the prompt so the LLM
-    sees high-confidence deps first.
+    When max_hops > 1, resolved dependency files are themselves scanned for
+    their imports, and those transitive dependencies are added (with decayed
+    confidence) up to the context budget.
 
     Args:
         repo_path: Path to the git repository root
@@ -979,15 +1013,19 @@ def build_context(
             max_context_chars, max_file_chars, max_deps_per_file, min_confidence
         doc_files: Optional list of document file paths (relative to repo root)
             to include as specification contract surfaces (README, ADR, etc.)
+        max_hops: How many levels of transitive dependencies to follow.
+            1 = direct imports only (default). 3 = follow imports up to 3 levels.
 
     Returns:
         ModuleContext with target files and their dependencies
     """
     rc = retrieval_config or {}
-    _max_context = int(rc.get("max_context_chars", MAX_CONTEXT_CHARS))
+    _base_max_context = int(rc.get("max_context_chars", MAX_CONTEXT_CHARS))
+    _max_context = _base_max_context
     _max_file = int(rc.get("max_file_chars", MAX_FILE_CHARS))
     _max_deps = int(rc.get("max_deps_per_file", MAX_DEPS_PER_FILE))
     _min_conf = float(rc.get("min_confidence", MIN_CONFIDENCE))
+    _graph_context_ceiling = _base_max_context * 2  # auto-expand limit for multi-hop
 
     ctx = ModuleContext()
     repo = Path(repo_path)
@@ -1046,63 +1084,82 @@ def build_context(
     except ImportError:
         pass  # sibling module not available — skip silently
 
-    # Step 2: Resolve and read dependencies (1-hop) with tiered confidence
-    for target in ctx.target_files:
-        imports = extract_imports(target.content, target.path)
-        dep_count = 0
-        tier3_count = 0  # Cap Tier 3 deps to avoid noise
-        MAX_TIER3_PER_FILE = 2
+    # Step 2: Resolve and read dependencies with tiered confidence.
+    # For max_hops=1 (default): direct imports only.
+    # For max_hops>1 (--depth deep): follow transitive imports.
+    CONFIDENCE_DECAY = 0.85  # confidence multiplier per additional hop
+    frontier: list[FileContext] = list(ctx.target_files)
+    budget_exhausted = False
 
-        # Sort: relative imports first (higher tier), then non-relative
-        sorted_imports = sorted(imports, key=lambda i: (not i.is_relative, i.path))
+    for hop in range(max_hops):
+        if budget_exhausted:
+            break
+        next_frontier: list[FileContext] = []
+        for source_fc in frontier:
+            imports = extract_imports(source_fc.content, source_fc.path)
+            dep_count = 0
+            tier3_count = 0
+            MAX_TIER3_PER_FILE = 2
 
-        for imp in sorted_imports:
-            if dep_count >= _max_deps:
-                break
+            sorted_imports = sorted(imports, key=lambda i: (not i.is_relative, i.path))
 
-            # Skip Tier 3 if budget exhausted
-            if not imp.is_relative and tier3_count >= MAX_TIER3_PER_FILE:
-                continue
+            for imp in sorted_imports:
+                if dep_count >= _max_deps:
+                    break
 
-            resolved = resolve_import_tiered(target.path, imp, repo_path)
-            found = _find_project_file(repo, resolved.candidates, seen_deps)
-            if found is None:
-                continue
+                if not imp.is_relative and tier3_count >= MAX_TIER3_PER_FILE:
+                    continue
 
-            candidate, full_path = found
-            content = _read_file_safe(full_path)
-            if content is None:
-                continue
+                resolved = resolve_import_tiered(source_fc.path, imp, repo_path)
+                found = _find_project_file(repo, resolved.candidates, seen_deps)
+                if found is None:
+                    continue
 
-            # Determine actual tier now that we know the resolved path
-            tier = _classify_tier(target.path, imp, candidate)
+                candidate, full_path = found
+                content = _read_file_safe(full_path)
+                if content is None:
+                    continue
 
-            # Skip below minimum confidence
-            if tier.confidence < _min_conf:
-                continue
+                tier = _classify_tier(source_fc.path, imp, candidate)
 
-            if total_chars + len(content) > _max_context:
-                ctx.warnings.append(
-                    f"Context limit reached ({total_chars} chars), "
-                    f"skipping remaining deps"
+                conf = tier.confidence * (CONFIDENCE_DECAY ** hop)
+                if conf < _min_conf:
+                    continue
+
+                if total_chars + len(content) > _max_context:
+                    if max_hops > 1 and _max_context < _graph_context_ceiling:
+                        _max_context = _graph_context_ceiling
+                        ctx.warnings.append(
+                            f"Context expanded to {_max_context} chars "
+                            f"for multi-hop analysis (hop {hop+1})"
+                        )
+                    else:
+                        ctx.warnings.append(
+                            f"Context limit reached ({total_chars} chars), "
+                            f"skipping remaining deps"
+                        )
+                        budget_exhausted = True
+                        break
+
+                if len(content) > _max_file:
+                    content = content[:_max_file] + "\n... (truncated)"
+
+                hop_label = tier.label if hop == 0 else f"{tier.label}(hop{hop+1})"
+                fc = FileContext(
+                    path=candidate,
+                    content=content,
+                    is_target=False,
+                    confidence=conf,
+                    dep_tier=hop_label,
                 )
-                return ctx
-
-            if len(content) > _max_file:
-                content = content[:_max_file] + "\n... (truncated)"
-
-            ctx.dep_files.append(FileContext(
-                path=candidate,
-                content=content,
-                is_target=False,
-                confidence=tier.confidence,
-                dep_tier=tier.label,
-            ))
-            seen_deps.add(candidate)
-            total_chars += len(content)
-            dep_count += 1
-            if tier == DepTier.PROJECT:
-                tier3_count += 1
+                ctx.dep_files.append(fc)
+                next_frontier.append(fc)
+                seen_deps.add(candidate)
+                total_chars += len(content)
+                dep_count += 1
+                if tier == DepTier.PROJECT:
+                    tier3_count += 1
+        frontier = next_frontier
 
     # Step 3: Architecture-aware hook dependencies
     # Discovers connections via framework hooks/events (WordPress actions,
@@ -1232,7 +1289,7 @@ def get_priority_files(
     # Step 1: Get per-file churn + recency from git log
     result = subprocess.run(
         ["git", "log", f"--since={months} months ago", "--format=%at", "--name-only"],
-        capture_output=True, text=True, cwd=repo_path,
+        capture_output=True, text=True, cwd=repo_path, timeout=60,
     )
 
     file_churn: dict[str, int] = defaultdict(int)

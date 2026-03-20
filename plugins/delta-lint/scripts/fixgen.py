@@ -152,7 +152,7 @@ def _generate_fix_api(prompt: str, model: str) -> str:
         raise RuntimeError("anthropic package not installed. Run: pip install anthropic")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
-    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=api_key, timeout=300.0) if api_key else anthropic.Anthropic(timeout=300.0)
 
     message = client.messages.create(
         model=model,

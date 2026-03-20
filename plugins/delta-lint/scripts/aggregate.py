@@ -77,6 +77,13 @@ def aggregate_results(
 
         # Files mentioned in individual findings
         for finding in findings:
+            loc = finding.get("location", {})
+            if isinstance(loc, dict):
+                for key in ("file_a", "file_b"):
+                    f = loc.get(key, "")
+                    if f:
+                        hit_files.add(f)
+            # Legacy: locations (plural) format
             for loc in finding.get("locations", []):
                 f = loc.get("file", "")
                 if f:
