@@ -14,7 +14,8 @@ If `.delta-lint/` does not exist or structure.json is missing:
 ユーザーが「delta init」と明示的に言った場合も同じフローが走る。
 
 init 完了後、Step 0 に進んでスキャンを続行する。
-**init 中に記録された findings（`found_by: delta-init`）も Step 7 の調査対象に含まれる。** init 由来だからといって `found` のまま放置しない。
+**init 中に記録された findings（`found_by: delta-init` / `found_by: first-blood`）も Step 7 の調査対象に含まれる。** init 由来だからといって `found` のまま放置しない。
+**ファーストブラッド（init Step 2.1.5）で `confirmed` 済みの finding は、Step 7 で再調査不要。** ステータスが既に `confirmed` なので完走チェックでも `found` にカウントされない。
 
 If `.delta-lint/` already exists, skip this step entirely.
 

@@ -36,6 +36,7 @@ All scripts are in: `scripts/` (relative to the plugin root).
 Only treat it as an error if stderr contains a Python traceback or "Error:" prefix.
 
 **NEVER use `--files` to manually select files.** Always let cli.py handle file selection. The CLI has `--since 3months` default + `--scope smart` fallback. Manually picking files bypasses this and drastically reduces scan quality.
+**唯一の例外**: init のファーストブラッド（Step 2.1.5）では、structure.json のホットスポットに基づいて `--files` を自動選択する。これは構造分析結果に基づく自動選択であり、手動選択ではない。
 
 **Scan は「記録して終わり」ではない。** findings 記録後、自動で全件の詳細調査（ソースコード精読→矛盾の実在確認→ステータス更新）まで実行する。ユーザーの指示を待たない。詳細は [workflow-scan.md Step 7](references/workflow-scan.md)。
 

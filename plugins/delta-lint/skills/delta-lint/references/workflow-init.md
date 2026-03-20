@@ -100,6 +100,81 @@ for c in constraints[:5]:
   フルスキャンは後から `/delta-scan --lens stress` で実行できます。
 ```
 
+## Step 2.1.5: ファーストブラッド — 最速で確定バグを1件見せる — CRITICAL UX STEP
+
+**構造分析完了直後に、最もリスクの高いホットスポットを狙い撃ちスキャンする。** ストレステストの全完了を待たず、1〜2分で最初の確定バグをユーザーに提示する。これが delta-lint の「第一印象」になる。
+
+### 2.1.5a: ホットスポットファイルの取得
+
+Step 2.1 で取得した structure.json のホットスポットから、上位3ファイルのパスを取得する:
+
+```bash
+cd {repo_path} && python3 -c "
+import json
+d=json.load(open('.delta-lint/stress-test/structure.json'))
+hotspots=d.get('hotspots',[])
+files=[]
+for h in hotspots[:3]:
+    p=h.get('path', h.get('file',''))
+    if p: files.append(p)
+print(' '.join(files))
+"
+```
+
+取得したファイルリストを `{hotspot_files}` として使う。ファイルが0件なら Step 2.15 にスキップ。
+
+### 2.1.5b: ホットスポットを即座にスキャン
+
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python cli.py scan --repo "{repo_path}" --files {hotspot_files} --lang {lang} --verbose 2>&1
+```
+
+タイムアウト: 180000 (3分)。これは detect() + verify() の2段階で、LLM呼び出し計2回。
+
+**注意**: `--files` は通常禁止だが、構造分析結果に基づく自動選択はこのステップのみ許可される。
+
+### 2.1.5c: 結果の即時判定と表示
+
+**exit code 1（high-severity finding あり）の場合:**
+
+各 finding について簡易トリアージを実行する:
+
+1. finding の `file_a`, `file_b` を Read で読む（関数全体を確認）
+2. caller を grep で1件確認（呼び出し元が存在するか）
+3. verify で confirmed + caller あり → 確定バグとして即表示
+
+```
+── δ-lint ── ⚡ ファーストブラッド: 確定バグ検出
+
+  [🔴 CONFIRMED] {pattern} — {file_a} vs {file_b}
+  → 放置すると: {user_impact}
+
+  詳細調査とストレステストは引き続きバックグラウンドで実行中...
+```
+
+finding を即座に記録する:
+```bash
+cd ~/.claude/skills/delta-lint/scripts && python3 -c "
+from findings import add_finding, Finding, generate_id
+fid = generate_id('{repo_name}', '{file_a}', '{title[:120]}', file_b='{file_b}', pattern='{pattern}')
+f = Finding(id=fid, repo='{repo_name}', title='{title}', description='{description}',
+            severity='{severity}', status='confirmed', found_by='first-blood',
+            file_a='{file_a}', file_b='{file_b}', pattern='{pattern}')
+add_finding('{repo_path}', f)
+print(f'recorded: {fid}')
+"
+```
+
+**finding はあるが確定に至らない場合（caller なし / 低確信度）:**
+- 記録はするがユーザーには表示しない（後の Step 5.5 トリアージで改めて判定）
+
+**finding が 0件の場合:**
+- 何も表示せず次のステップに進む（ストレステスト結果を待つ）
+
+### 2.1.5d: ファーストブラッドの finding ID を記録
+
+ファーストブラッドで記録した finding ID を `{first_blood_ids}` として保持する。Step 2.2 で既存バグを表示する際に、重複表示を避けるために使う。
+
 ## Step 2.15: 過去バグ履歴の収集 — BACKGROUND CONTEXT
 
 **structure.json の待ち時間を利用して、リポの過去バグ傾向を収集する。**
@@ -287,6 +362,8 @@ if result.get('bugfix_hotfiles'):
 ## Step 2.2: 既存バグの表示 — CRITICAL UX STEP
 
 **existing_findings.json が生成されるのを待って読む。** ホットスポットの直接スキャン結果で、構造分析の直後（structure.json の後）に生成される。通常 structure.json から1〜3分後に完了する。
+
+**重複排除**: Step 2.1.5 のファーストブラッドで既に表示・記録した finding と同じファイルペア+パターンの finding は、ここでは表示しない（`{first_blood_ids}` と照合）。
 
 ```bash
 for i in $(seq 1 90); do [ -f "{repo_path}/.delta-lint/stress-test/existing_findings.json" ] && break; sleep 2; done && cd {repo_path} && python3 -c "
