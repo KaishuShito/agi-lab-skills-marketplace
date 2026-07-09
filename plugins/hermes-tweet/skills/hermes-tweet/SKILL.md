@@ -22,9 +22,11 @@ Do not place API keys in prompts, issues, PRs, or tool arguments.
 1. Call `tweet_explore` to find a catalog route.
 2. Call `tweet_read` for read-only X/Twitter context after `XQUIK_API_KEY` is
    configured.
-3. Set `HERMES_TWEET_ENABLE_ACTIONS=true` only for sessions that need posting,
-   replies, likes, retweets, follows, DMs, monitors, webhooks, media changes,
-   or other account-changing actions.
+3. Ask for explicit approval before any posting, replies, likes, retweets,
+   follows, DMs, monitors, webhooks, media changes, or other account-changing
+   actions.
+4. Set `HERMES_TWEET_ENABLE_ACTIONS=true` only after approval and only for
+   approved action sessions.
 
 ## Good Fits
 
