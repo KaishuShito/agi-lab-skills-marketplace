@@ -24,6 +24,14 @@
       "version": "1.1.0",
       "category": "fun",
       "tags": ["entertainment", "ascii-art", "terminal", "break-time"]
+    },
+    {
+      "name": "hermes-tweet",
+      "source": "./plugins/hermes-tweet",
+      "description": "Hermes Agent guide for X/Twitter search, account reads, social listening, and gated social actions.",
+      "version": "0.1.6",
+      "category": "social-automation",
+      "tags": ["hermes-agent", "x", "twitter", "social-media", "automation"]
     }
   ]
 }

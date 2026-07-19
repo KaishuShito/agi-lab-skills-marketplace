@@ -1,0 +1,17 @@
+{
+  "name": "hermes-tweet",
+  "description": "Guide Hermes Agent users through Hermes Tweet X/Twitter workflows.",
+  "version": "0.1.6",
+  "author": {
+    "name": "Xquik"
+  },
+  "homepage": "https://github.com/Xquik-dev/hermes-tweet",
+  "license": "MIT",
+  "keywords": [
+    "hermes-agent",
+    "x",
+    "twitter",
+    "social-media",
+    "automation"
+  ]
+}

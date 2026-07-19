@@ -19,13 +19,19 @@ JOKES[13]="幽霊の好きなデータ型は？ ブーリアン（Boo-lean）。
 JOKES[14]="プログラマーは寝る前に2つのグラス置く。水入り1つと、喉が渇かない場合のために空1つ。"
 
 COLS=$(tput cols 2>/dev/null || echo 80)
+case "$COLS" in
+  ''|*[!0-9]*) COLS=80 ;;
+esac
+if [ "$COLS" -lt 4 ]; then
+  COLS=4
+fi
 MAX_INDENT=$((COLS / 4))
 
 echo ""
 printf "\033[1;33m  === ダジャレの雨 ===\033[0m\n"
 echo ""
 
-for i in $(seq 0 4); do
+for _ in 1 2 3 4 5; do
   IDX=$((RANDOM % ${#JOKES[@]}))
   JOKE="${JOKES[$IDX]}"
 
